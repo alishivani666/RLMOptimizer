@@ -6,7 +6,7 @@ It's built on DSPy's [Recursive Language Model (RLM)](https://arxiv.org/abs/2512
 
 ## Why
 
-Most DSPy optimizers (MIPROv2, BootstrapFewShot, etc.) search over prompts using fixed strategies. That works well for many tasks, but they can't look at *why* examples fail and reason about what to change. RLMOptimizer can:
+Most DSPy optimizers (GEPA, MIPROv2, etc.) search over prompts using fixed strategies. That works well for many tasks, but they can't look at *why* examples fail and reason about what to change. RLMOptimizer can:
 
 - Run an evaluation, then drill into the specific examples that failed
 - Trace through each step of a multi-step pipeline to find where errors were introduced
