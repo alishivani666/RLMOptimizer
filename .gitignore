@@ -1,0 +1,41 @@
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual environments and local env files
+.venv/
+venv/
+.env
+.env.*
+.python-version
+
+# Tooling/editor state
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.claude/
+.rlm_debug/
+.vscode/
+.idea/
+.DS_Store
+
+# Local scratch/output files
+response.txt
+
+# Internal docs (not part of initial public release)
+docs/
+
+# Benchmarks are intentionally excluded from initial public release
+rlmoptimizer/benchmarks/
+
+# Large local benchmark artifacts (defense in depth)
+**/runs/
+**/retriever_cache/
+**/bm25s_retriever/
+**/wiki.abstracts*.jsonl

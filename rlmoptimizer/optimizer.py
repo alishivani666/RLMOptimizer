@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+import dspy
+from dspy.teleprompt.teleprompt import Teleprompter
+
+from .kernel import OptimizationKernel
+from .rlm_session import RLMSession
+from .types import BudgetExceededError
+
+
+class RLMDocstringOptimizer(Teleprompter):
+    def __init__(
+        self,
+        *,
+        max_iterations: int,
+        root_lm: dspy.LM,
+        sub_lm: dspy.LM | None = None,
+        eval_lm: dspy.LM | None = None,
+        num_threads: int = 1,
+        rlm_max_iterations: int = 200,
+        rlm_max_llm_calls: int = 200,
+        rlm_max_output_chars: int = 100_000,
+        verbose: bool = False,
+        run_storage_dir: str | Path | None = None,
+        rlm_factory: Callable[..., Any] | None = None,
+        session_cls: type[RLMSession] = RLMSession,
+    ) -> None:
+        super().__init__()
+        if max_iterations <= 0:
+            raise ValueError("max_iterations must be greater than zero")
+        if num_threads <= 0:
+            raise ValueError("num_threads must be greater than zero")
+        if rlm_max_iterations <= 0:
+            raise ValueError("rlm_max_iterations must be greater than zero")
+        if rlm_max_llm_calls <= 0:
+            raise ValueError("rlm_max_llm_calls must be greater than zero")
+        if rlm_max_output_chars <= 0:
+            raise ValueError("rlm_max_output_chars must be greater than zero")
+
+        self.max_iterations = int(max_iterations)
+        self.num_threads = int(num_threads)
+        self.rlm_max_iterations = int(rlm_max_iterations)
+        self.rlm_max_llm_calls = int(rlm_max_llm_calls)
+        self.rlm_max_output_chars = int(rlm_max_output_chars)
+        self.verbose = bool(verbose)
+        self.run_storage_dir = (
+            Path(run_storage_dir).resolve() if run_storage_dir is not None else None
+        )
+        self.rlm_factory = rlm_factory
+        self.session_cls = session_cls
+
+        self.root_lm = self._require_lm(root_lm, role="root_lm")
+        self.sub_lm = self._optional_lm(sub_lm, role="sub_lm")
+        self.eval_lm = self._optional_lm(eval_lm, role="eval_lm")
+
+    def _require_lm(self, value: Any, *, role: str) -> dspy.LM:
+        if isinstance(value, dspy.LM):
+            return value
+        raise TypeError(f"{role} must be a dspy.LM instance")
+
+    def _optional_lm(self, value: Any, *, role: str) -> dspy.LM | None:
+        if value is None:
+            return None
+        if isinstance(value, dspy.LM):
+            return value
+        raise TypeError(f"{role} must be a dspy.LM instance or None")
+
+    def _resolve_eval_lm(self) -> dspy.LM:
+        if self.eval_lm is not None:
+            return self.eval_lm
+        configured = dspy.settings.get("lm")
+        if configured is None:
+            raise ValueError("eval_lm is required when dspy.settings.lm is not configured")
+        if isinstance(configured, dspy.LM):
+            return configured
+        raise TypeError("dspy.settings.lm must be a dspy.LM instance")
+
+    def _clone_program(self, student: dspy.Module) -> dspy.Module:
+        if hasattr(student, "deepcopy") and callable(getattr(student, "deepcopy")):
+            return student.deepcopy()
+        return copy.deepcopy(student)
+
+    def _objective_text(self, train_size: int, val_size: int) -> str:
+        return (
+            "Optimize predictor signature instructions to maximize evaluation score. "
+            "You may call evaluate_program/update_instruction/run_data/optimization_status as needed. "
+            "Only update instructions; no structural edits are allowed. "
+            f"Train examples: {train_size}. Val examples: {val_size}. "
+            "Respect budget, and finish with SUBMIT(final_report=..., suggested_best_run_id=...)."
+        )
+
+    def compile(
+        self,
+        student: dspy.Module,
+        *,
+        trainset: Sequence[dspy.Example],
+        metric: Callable[..., Any],
+        teacher: dspy.Module | None = None,
+        valset: Sequence[dspy.Example] | None = None,
+        **kwargs: Any,
+    ) -> dspy.Module:
+        del teacher, kwargs
+        if not isinstance(student, dspy.Module):
+            raise TypeError("student must be a dspy.Module")
+        if not trainset:
+            raise ValueError("trainset must not be empty")
+        if not callable(metric):
+            raise TypeError("metric must be callable")
+
+        program = self._clone_program(student)
+        eval_lm = self._resolve_eval_lm()
+
+        kernel = OptimizationKernel(
+            program=program,
+            trainset=list(trainset),
+            valset=list(valset) if valset is not None else None,
+            metric=metric,
+            eval_lm=eval_lm,
+            num_threads=self.num_threads,
+            max_iterations=self.max_iterations,
+            max_output_chars=self.rlm_max_output_chars,
+            run_storage_dir=self.run_storage_dir,
+        )
+
+        try:
+            kernel.run_baseline()
+
+            session = self.session_cls(
+                root_lm=self.root_lm,
+                sub_lm=self.sub_lm,
+                max_iterations=self.rlm_max_iterations,
+                max_llm_calls=self.rlm_max_llm_calls,
+                max_output_chars=self.rlm_max_output_chars,
+                verbose=self.verbose,
+                rlm_factory=self.rlm_factory,
+            )
+
+            session_result: dict[str, Any] = {}
+            try:
+                session_result = session.run(
+                    kernel,
+                    objective=self._objective_text(
+                        train_size=len(trainset),
+                        val_size=len(valset) if valset is not None else 0,
+                    ),
+                )
+            except BudgetExceededError:
+                # Budget exhaustion is a normal hard-stop path.
+                session_result = {
+                    "final_report": "Stopped due to budget exhaustion.",
+                    "suggested_best_run_id": kernel.state.best_run_id or "",
+                    "trajectory": [],
+                    "final_reasoning": "",
+                }
+
+            kernel.restore_best_instructions()
+
+            program.trial_logs = kernel.trial_logs()
+            program.best_score = kernel.state.best_score
+            program.best_run_id = kernel.state.best_run_id
+            program.baseline_run_id = kernel.state.baseline_run_id
+            program.agent_report = session_result.get("final_report", "")
+            program.agent_suggested_best_run_id = session_result.get(
+                "suggested_best_run_id", ""
+            )
+            program.agent_trajectory = session_result.get("trajectory", [])
+            program.agent_final_reasoning = session_result.get("final_reasoning", "")
+            return program
+        finally:
+            kernel.close()
