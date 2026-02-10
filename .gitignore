@@ -36,6 +36,8 @@ response.txt
 docs/
 
 # Benchmarks are intentionally excluded from initial public release
+benchmarks/
+**/benchmarks/
 rlmoptimizer/benchmarks/
 
 # Large local benchmark artifacts (defense in depth)
