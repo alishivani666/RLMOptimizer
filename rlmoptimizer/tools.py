@@ -231,26 +231,32 @@ class OptimizationTools:
             dspy.Tool(
                 self.evaluate_program,
                 desc=(
-                    "Run a fresh budgeted evaluation after instruction changes. "
-                    "Returns score summary plus per-example diagnostics/traces and "
-                    "stores the full run for later retrieval via run_data. "
-                    "Use this for new evidence, not for re-reading old runs."
+                    "Run the program on dataset examples and score outputs. Consumes budget "
+                    "proportional to the number of examples evaluated. Returns a dict with: "
+                    "score (0-100%), evaluated_count, passed_count, run_id, remaining_budget, "
+                    "summary_line, and examples — a list where each entry contains example_id, "
+                    "inputs, expected, predicted, score, passed, error_text, and steps (a list "
+                    "of per-predictor traces with step_index, step_name, inputs, and outputs "
+                    "showing what each predictor in the pipeline received and produced). "
+                    "The run is stored and can be re-read later via run_data(run_id) for free. "
+                    "Large payloads may be truncated; use llm_query/llm_query_batched on the "
+                    "data for deeper semantic analysis."
                 ),
                 arg_desc={
-                    "split": "Dataset split to evaluate: 'train' or 'val'.",
-                    "limit": "Maximum number of selected examples to evaluate. Accepts int/float/string integer or null.",
-                    "ids": "Optional selector: string ('1,2,8' or '10-20'), integer (5), or list like [1,2,'8-10'].",
-                    "sample": "Selection mode when limit is set: 'first', 'random', or null (treated as 'first').",
-                    "sample_seed": "Random seed used only when sample='random'. Accepts int/float/string integer or null.",
-                    "failed_from_run": "Optional run ID from evaluate_program. Accepts run ID string or integer.",
+                    "split": "Dataset split: 'train' or 'val'.",
+                    "limit": "Max examples to evaluate. Use small values (e.g. 10-30) for quick iteration. Null evaluates all.",
+                    "ids": "Evaluate specific examples: string like '1,2,8' or '10-20', int, list of str/int, or null for all.",
+                    "sample": "'first' (default) keeps order, 'random' samples randomly. Only matters with limit.",
+                    "sample_seed": "Random seed when sample='random'. Null for non-deterministic.",
+                    "failed_from_run": "Run ID — re-evaluate only examples that failed in that run. Very budget-efficient for iteration.",
                 },
             ),
             dspy.Tool(
                 self.run_data,
                 desc=(
-                    "Fetch a previously stored run payload by run_id for comparison "
-                    "or deeper analysis. Does not run evaluation and does not "
-                    "consume budget."
+                    "Fetch a previously stored run by run_id. Returns the same dict structure as "
+                    "evaluate_program (score, examples with per-step traces, etc.). "
+                    "Does NOT consume any budget — use this freely to re-read and analyze old runs."
                 ),
                 arg_desc={
                     "run_id": "Run ID returned by evaluate_program, as string or integer.",
@@ -259,21 +265,23 @@ class OptimizationTools:
             dspy.Tool(
                 self.update_instruction,
                 desc=(
-                    "Replace one predictor's signature instruction text. This is "
-                    "the only mutation tool and it rejects any structural or "
-                    "non-instruction edits."
+                    "Replace one predictor's instruction text. Provide the complete new instruction "
+                    "(not a patch). Returns {status, predictor_name, instruction_hash, "
+                    "instruction_preview} on success, or {error: message} on failure."
                 ),
                 arg_desc={
-                    "predictor_name": "Predictor to update; must be one name from optimization_status()['predictors'].",
-                    "new_text": "Complete replacement instruction text for that single predictor.",
+                    "predictor_name": "Predictor to update; must be a name from optimization_status()['predictors'].",
+                    "new_text": "Complete replacement instruction text for that predictor.",
                 },
             ),
             dspy.Tool(
                 self.optimization_status,
                 desc=(
-                    "Get current optimization state including budget counters, "
-                    "latest/best runs, and current/best instruction maps. Use "
-                    "this to decide next actions and confirm remaining budget."
+                    "Returns current optimization state as a dict with: remaining_budget, "
+                    "evaluated_examples, best_score, best_run_id, latest_run_id, baseline_run_id, "
+                    "current_instructions (dict mapping predictor name → current instruction text), "
+                    "best_instructions (same mapping for best-scoring version), and predictors "
+                    "(list of predictor names you can pass to update_instruction)."
                 ),
             ),
         ]

@@ -87,10 +87,9 @@ class RLMDocstringOptimizer(Teleprompter):
     def _objective_text(self, train_size: int, val_size: int) -> str:
         return (
             "Optimize predictor signature instructions to maximize evaluation score. "
-            "You may call evaluate_program/update_instruction/run_data/optimization_status as needed. "
-            "Only update instructions; no structural edits are allowed. "
-            f"Train examples: {train_size}. Val examples: {val_size}. "
-            "Respect budget, and finish with SUBMIT(final_report=..., suggested_best_run_id=...)."
+            f"Train set: {train_size} examples. "
+            + (f"Val set: {val_size} examples. " if val_size > 0 else "")
+            + "When you are done, finish with SUBMIT(final_report=..., suggested_best_run_id=...)."
         )
 
     def compile(

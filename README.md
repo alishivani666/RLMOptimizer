@@ -35,9 +35,9 @@ from rlmoptimizer import RLMDocstringOptimizer
 
 optimizer = RLMDocstringOptimizer(
     max_iterations=5,
-    root_lm=dspy.LM("openai/gpt-4.1-mini"),
-    sub_lm=dspy.LM("openai/gpt-4.1-mini"),
-    eval_lm=dspy.LM("openai/gpt-4.1-mini"),
+    root_lm=dspy.LM("openai/gpt-5"),
+    sub_lm=dspy.LM("openai/gpt-5-mini"),
+    eval_lm=dspy.LM("openai/gpt-5-mini"),
 )
 
 optimized_program = optimizer.compile(
