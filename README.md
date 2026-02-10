@@ -22,7 +22,7 @@ Requirements:
 ### 2. Run the local example (no API keys required)
 
 ```bash
-python examples/minimal_compile/apt_example.py
+python example.py
 ```
 
 This example uses a scripted optimizer session so you can see the full compile flow without network calls.
@@ -118,7 +118,6 @@ rlmoptimizer/
   budgeting.py
   fingerprint.py
   types.py
-examples/
-  minimal_compile/
+example.py
 tests/
 ```
