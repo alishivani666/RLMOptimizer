@@ -1,8 +1,8 @@
 # RLMOptimizer
 
-An agentic prompt optimizer for DSPy programs. Instead of applying fixed optimization heuristics, RLMOptimizer uses an LLM agent that can evaluate your program, inspect per-example failures and per-step traces, diagnose what went wrong, and rewrite predictor instructions — iterating until it finds prompts that work.
+An autonomous prompt optimizer for DSPy programs. Instead of applying fixed optimization heuristics, RLMOptimizer uses a RLM that can evaluate your program, inspect per-example failures and per-step traces, diagnose what went wrong, and rewrite predictor instructions — iterating until it finds prompts that work.
 
-It's built on DSPy's [Recursive Language Model (RLM)](https://arxiv.org/abs/2512.24601) module, which gives the optimizer agent a persistent code environment to analyze evaluation data programmatically.
+It's built on DSPy's [Recursive Language Model (RLM)](https://arxiv.org/abs/2512.24601) module, which gives the optimizer LLM a persistent code environment to analyze evaluation data programmatically.
 
 ## Why
 
