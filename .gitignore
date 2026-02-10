@@ -28,6 +28,10 @@ venv/
 # Local scratch/output files
 response.txt
 
+# NumPy binary arrays (large generated artifacts)
+*.npy
+*.npz
+
 # Internal docs (not part of initial public release)
 docs/
 
