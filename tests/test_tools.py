@@ -32,6 +32,8 @@ def test_evaluate_and_run_data_round_trip(tmp_path: Path):
     assert loaded["run_id"] == run_id
     assert loaded["evaluated_count"] == 4
     assert "examples" in loaded
+    assert "remaining_budget" not in loaded
+    assert "Budget remaining:" not in loaded["summary_line"]
 
     status = kernel.optimization_status()
     assert status["baseline_run_id"] == run_id
@@ -89,6 +91,8 @@ def test_tools_normalize_inputs_and_return_errors(tmp_path: Path):
     loaded = tools.run_data(run_id)
     assert isinstance(loaded, dict)
     assert loaded["run_id"] == run_id
+    assert "remaining_budget" not in loaded
+    assert "Budget remaining:" not in loaded["summary_line"]
 
     bad_limit = tools.evaluate_program(limit="not-an-int")
     assert isinstance(bad_limit, dict)

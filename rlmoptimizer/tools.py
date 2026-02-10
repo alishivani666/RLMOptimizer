@@ -179,6 +179,7 @@ class OptimizationTools:
 
         Use this to re-open historical runs for comparison or deeper analysis.
         This does not trigger re-evaluation and does not consume budget.
+        This response omits ``remaining_budget``.
 
         Args:
             run_id: Run identifier returned by ``evaluate_program``.
@@ -238,7 +239,8 @@ class OptimizationTools:
                     "inputs, expected, predicted, score, passed, error_text, and steps (a list "
                     "of per-predictor traces with step_index, step_name, inputs, and outputs "
                     "showing what each predictor in the pipeline received and produced). "
-                    "The run is stored and can be re-read later via run_data(run_id) for free. "
+                    "The run is stored and can be re-read later via run_data(run_id) for free; "
+                    "run_data omits remaining_budget. "
                     "Large payloads may be truncated; use llm_query/llm_query_batched on the "
                     "data for deeper semantic analysis."
                 ),
@@ -255,7 +257,7 @@ class OptimizationTools:
                 self.run_data,
                 desc=(
                     "Fetch a previously stored run by run_id. Returns the same dict structure as "
-                    "evaluate_program (score, examples with per-step traces, etc.). "
+                    "evaluate_program except that remaining_budget is omitted. "
                     "Does NOT consume any budget — use this freely to re-read and analyze old runs."
                 ),
                 arg_desc={

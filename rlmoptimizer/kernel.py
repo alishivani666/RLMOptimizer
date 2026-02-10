@@ -11,6 +11,7 @@ import dspy
 
 from .evaluator import DatasetRow, build_dataset_rows, evaluate_rows, parse_ids, select_rows
 from .fingerprint import apply_instruction_map, instruction_map, structure_hash
+from .progress import ProgressReporter, create_progress_reporter
 from .types import (
     BudgetExceededError,
     InstructionUpdateError,
@@ -174,24 +175,35 @@ class OptimizationKernel:
         self._charge_budget(units=evaluated_count, reason="evaluation examples")
         self.state.evaluated_examples += evaluated_count
 
-        run_id = self._new_run_id()
-        payload = evaluate_rows(
-            program=self.program,
-            rows=selected_rows,
-            metric=self.metric,
-            eval_lm=self.eval_lm,
-            split=split,
-            config={
-                "split": split,
-                "limit": limit,
-                "ids": ids,
-                "sample": sample,
-                "sample_seed": sample_seed,
-                "failed_from_run": failed_from_run,
-            },
-            num_threads=self.num_threads,
-            progress_callback=_progress_callback,
+        progress_callback, progress_reporter = self._progress_callback_with_reporter(
+            external_callback=_progress_callback
         )
+
+        run_id = self._new_run_id()
+        try:
+            payload = evaluate_rows(
+                program=self.program,
+                rows=selected_rows,
+                metric=self.metric,
+                eval_lm=self.eval_lm,
+                split=split,
+                config={
+                    "split": split,
+                    "limit": limit,
+                    "ids": ids,
+                    "sample": sample,
+                    "sample_seed": sample_seed,
+                    "failed_from_run": failed_from_run,
+                },
+                num_threads=self.num_threads,
+                progress_callback=progress_callback,
+            )
+        finally:
+            if progress_reporter is not None:
+                try:
+                    progress_reporter.close()
+                except Exception:  # pragma: no cover - diagnostics cleanup must not fail eval.
+                    pass
 
         payload["run_id"] = run_id
         payload["remaining_budget"] = self.state.remaining_budget
@@ -222,6 +234,23 @@ class OptimizationKernel:
         print(summary)
         return payload
 
+    def _progress_callback_with_reporter(
+        self,
+        *,
+        external_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> tuple[Callable[[dict[str, Any]], None] | None, ProgressReporter | None]:
+        reporter = create_progress_reporter()
+
+        def dispatch(event: dict[str, Any]) -> None:
+            try:
+                reporter.handle_event(event)
+            except Exception:  # pragma: no cover - diagnostics callback must not break eval.
+                pass
+            if external_callback is not None:
+                external_callback(event)
+
+        return dispatch, reporter
+
     def evaluate_program(
         self,
         split: str = "train",
@@ -247,8 +276,19 @@ class OptimizationKernel:
         payload = self._load_run_payload(run_id)
         return payload
 
+    def _summary_line_without_budget(self, payload: dict[str, Any]) -> str:
+        return (
+            f"Score: {payload['score']}% | "
+            f"{payload['passed_count']}/{payload['evaluated_count']} passed | "
+            f"Run: {payload['run_id']}"
+        )
+
     def run_data(self, run_id: str) -> dict[str, Any]:
-        payload = self.run_data_raw(run_id)
+        payload = dict(self.run_data_raw(run_id))
+        # Historical per-run budget snapshots are intentionally hidden in run_data()
+        # to avoid confusion with current shared budget.
+        payload.pop("remaining_budget", None)
+        payload["summary_line"] = self._summary_line_without_budget(payload)
         return payload
 
     def update_instruction(self, predictor_name: str, new_text: str) -> dict[str, Any]:

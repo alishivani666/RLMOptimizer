@@ -1,33 +1,38 @@
 # RLMOptimizer
 
-RLMOptimizer is an agentic prompt optimizer for DSPy programs.
-It runs an optimization loop that evaluates your program, analyzes failures, and updates predictor instructions to improve score.
+An agentic prompt optimizer for DSPy programs. Instead of applying fixed optimization heuristics, RLMOptimizer uses an LLM agent that can evaluate your program, inspect per-example failures and per-step traces, diagnose what went wrong, and rewrite predictor instructions — iterating until it finds prompts that work.
 
-Status of this open-source snapshot:
-- Includes: core optimizer library + deterministic local example + core tests.
-- Excludes (for now): benchmark replication code and internal docs.
+It's built on DSPy's [Recursive Language Model (RLM)](https://arxiv.org/abs/2512.24601) module, which gives the optimizer agent a persistent code environment to analyze evaluation data programmatically.
 
-## Quickstart
+## Why
 
-### 1. Install
+Most DSPy optimizers (MIPROv2, BootstrapFewShot, etc.) search over prompts using fixed strategies. That works well for many tasks, but they can't look at *why* examples fail and reason about what to change. RLMOptimizer can:
+
+- Run an evaluation, then drill into the specific examples that failed
+- Trace through each step of a multi-step pipeline to find where errors were introduced
+- Use a sub-LLM to batch-classify failure patterns across many examples
+- Write new instructions that specifically address the patterns it found
+- Re-evaluate to check if the changes helped, and keep iterating
+
+The optimizer agent does all of this autonomously — you just call `compile()`.
+
+## Install
 
 ```bash
-python -m pip install -e ".[dev]"
+pip install -e ".[dev]"
 ```
 
-Requirements:
-- Python 3.10+
-- `dspy>=3.1.3`
+Requires Python 3.10+ and `dspy>=3.1.3`.
 
-### 2. Run the local example (no API keys required)
+## Quick Example (no API keys needed)
 
 ```bash
 python example.py
 ```
 
-This example uses a scripted optimizer session so you can see the full compile flow without network calls.
+This runs a self-contained demo with a scripted optimizer session so you can see the full flow without any API calls.
 
-### 3. Run with real LMs
+## Usage
 
 ```python
 import dspy
@@ -35,89 +40,97 @@ from rlmoptimizer import RLMDocstringOptimizer
 
 optimizer = RLMDocstringOptimizer(
     max_iterations=5,
-    root_lm=dspy.LM("openai/gpt-5"),
-    sub_lm=dspy.LM("openai/gpt-5-mini"),
-    eval_lm=dspy.LM("openai/gpt-5-mini"),
+    root_lm=dspy.LM("openai/gpt-5"),        # the optimizer agent
+    sub_lm=dspy.LM("openai/gpt-5-mini"),     # used by the agent for analysis
+    eval_lm=dspy.LM("openai/gpt-5-mini"),    # runs your program during evaluation
 )
 
-optimized_program = optimizer.compile(
+optimized = optimizer.compile(
     student=program,
     trainset=trainset,
     metric=metric,
-    valset=valset,
+    valset=valset,   # optional
 )
+
+# Use the optimized program
+result = optimized(question="What is the capital of France?")
+
+# Inspect what happened during optimization
+print(optimized.best_score)
+print(optimized.trial_logs)
+print(optimized.agent_report)
 ```
 
-For real model runs, configure provider keys in your environment (for example `OPENAI_API_KEY`).
+Set `OPENAI_API_KEY` (or the appropriate provider key) in your environment.
+
+### What the three LMs do
+
+| Parameter | Role | Recommendation |
+|-----------|------|----------------|
+| `root_lm` | The optimizer agent that decides what to evaluate, analyzes results, and writes new instructions | Your strongest model |
+| `sub_lm` | Helper LLM the agent can call for semantic analysis (e.g., classifying failure patterns across examples) | A capable but cheaper model |
+| `eval_lm` | Runs your actual DSPy program during evaluation | Whatever model your program targets |
 
 ## How It Works
 
-`compile(...)` performs this loop:
-1. Clone the student program.
-2. Run baseline evaluation on the train set.
-3. Start an RLM-driven loop that can:
-   - evaluate program slices,
-   - inspect stored run data,
-   - update predictor instructions,
-   - check optimizer status.
-4. Track the best-performing instruction map.
-5. Restore best instructions and return the optimized program.
+When you call `compile()`:
 
-## Budget Model
+1. Your program is cloned and evaluated on the training set to establish a baseline score.
+2. An RLM agent takes over. It has access to four tools:
+   - **`evaluate_program`** — run the program on examples and get back scores, predictions, and per-step traces showing what each predictor in the pipeline received and produced.
+   - **`run_data`** — re-read any previous evaluation run (no budget cost).
+   - **`update_instruction`** — rewrite the instruction text for any predictor.
+   - **`optimization_status`** — check remaining budget, current/best scores, and all predictor instructions.
+3. The agent also has `llm_query` and `llm_query_batched` to send data to a sub-LLM for analysis — useful when evaluation payloads are large or when it needs semantic understanding of failures.
+4. The agent iterates: evaluating, analyzing, updating instructions, and re-evaluating until it's satisfied or budget runs out.
+5. The best-performing instructions are restored and the optimized program is returned.
 
-Total budget units are initialized as:
+### Budget
 
-`max_iterations * len(trainset)`
+Optimization has a finite budget measured in units:
 
-Budget is charged by:
-- examples evaluated (`evaluate_program`),
-- root LM calls used by the optimizer agent,
-- sub-LM calls used by agent helper queries.
+```
+budget = max_iterations * len(trainset)
+```
 
-When budget reaches zero, optimization ends with `BudgetExceededError`.
+Every example evaluated and every LM call the agent makes costs budget. When budget hits zero, optimization stops and the best result so far is returned. The agent is told about its budget and can use targeted evaluations (`limit`, `failed_from_run`, specific `ids`) to spend it wisely.
 
-## API Notes
+## Parameters
 
-`RLMDocstringOptimizer` is Teleprompter-compatible and supports:
-- `max_iterations` (required)
-- `root_lm` (required `dspy.LM`)
-- `sub_lm` / `eval_lm` (optional `dspy.LM`)
-- `num_threads`
-- `run_storage_dir`
-- `rlm_max_iterations`, `rlm_max_llm_calls`, `rlm_max_output_chars`
-- test hooks: `rlm_factory`, `session_cls`
+```python
+RLMDocstringOptimizer(
+    max_iterations=5,           # controls total budget (iterations * trainset size)
+    root_lm=...,                # required — the optimizer agent LM
+    sub_lm=...,                 # optional — helper LM for agent analysis
+    eval_lm=...,                # optional — LM for running your program (falls back to dspy.settings.lm)
+    num_threads=1,              # parallel threads for evaluation
+    run_storage_dir=None,       # directory to persist evaluation runs (default: temp dir)
+    rlm_max_iterations=200,     # max agent loop iterations
+    rlm_max_llm_calls=200,      # max sub-LM calls the agent can make
+    rlm_max_output_chars=100000,# max output size per agent iteration
+    verbose=False,              # print agent trajectory
+)
+```
 
-Returned program metadata includes:
-- `best_score`
-- `best_run_id`
-- `baseline_run_id`
-- `trial_logs`
-- `agent_report`
-- `agent_trajectory`
-- `agent_final_reasoning`
+The returned program has extra attributes:
+
+```python
+optimized.best_score              # highest score achieved
+optimized.best_run_id             # run ID of the best evaluation
+optimized.baseline_run_id         # run ID of the initial baseline
+optimized.trial_logs              # list of all evaluation runs with scores and configs
+optimized.agent_report            # the agent's summary of what it tried
+optimized.agent_trajectory        # full trajectory of agent actions
+optimized.agent_final_reasoning   # the agent's final reasoning
+```
 
 ## Development
-
-Run quality checks:
 
 ```bash
 ruff check .
 pytest -q
 ```
 
-## Repository Layout
+## License
 
-```text
-rlmoptimizer/
-  __init__.py
-  optimizer.py
-  kernel.py
-  rlm_session.py
-  tools.py
-  evaluator.py
-  budgeting.py
-  fingerprint.py
-  types.py
-example.py
-tests/
-```
+MIT

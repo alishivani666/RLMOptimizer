@@ -51,7 +51,8 @@ class OptimizationAgentSignature(dspy.Signature):
             ]
         }
 
-    `run_data(run_id)` returns the same structure for a previously stored run WITHOUT consuming budget.
+    `run_data(run_id)` returns the stored run WITHOUT consuming budget and omits
+    `remaining_budget`.
 
     ## Per-step traces: your most important diagnostic
 

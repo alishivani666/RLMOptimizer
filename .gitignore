@@ -46,3 +46,4 @@ rlmoptimizer/benchmarks/
 **/retriever_cache/
 **/bm25s_retriever/
 **/wiki.abstracts*.jsonl
+trace.md
