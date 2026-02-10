@@ -27,6 +27,7 @@ venv/
 
 # Local scratch/output files
 response.txt
+.repo_ignore
 
 # NumPy binary arrays (large generated artifacts)
 *.npy
