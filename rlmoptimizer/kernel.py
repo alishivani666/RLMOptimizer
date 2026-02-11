@@ -79,6 +79,26 @@ class OptimizationKernel:
         self._baseline_structure_hash = structure_hash(self.program)
         self._debug_display = debug_display
 
+    def _best_tracking_split(self) -> str:
+        """Track best runs on full val when available, else full train."""
+        return "val" if self.dataset_rows["val"] else "train"
+
+    def _is_eligible_best_run(
+        self,
+        *,
+        split: str,
+        selected_rows: list[DatasetRow],
+        selected_ids: list[str] | None,
+        failed_from_run: str | None,
+    ) -> bool:
+        if split != self._best_tracking_split():
+            return False
+        if failed_from_run is not None:
+            return False
+        if selected_ids:
+            return False
+        return len(selected_rows) == len(self.dataset_rows[split])
+
     def close(self) -> None:
         if self._storage_tempdir is not None:
             self._storage_tempdir.cleanup()
@@ -228,10 +248,17 @@ class OptimizationKernel:
         )
 
         self.state.latest_run_id = run_id
-        if payload["score"] > self.state.best_score:
-            self.state.best_score = float(payload["score"])
-            self.state.best_run_id = run_id
-            self.state.best_instruction_map = dict(self.state.current_instruction_map)
+        if self._is_eligible_best_run(
+            split=split,
+            selected_rows=selected_rows,
+            selected_ids=selected_ids,
+            failed_from_run=failed_from_run,
+        ):
+            score = float(payload["score"])
+            if self.state.best_run_id is None or score > self.state.best_score:
+                self.state.best_score = score
+                self.state.best_run_id = run_id
+                self.state.best_instruction_map = dict(self.state.current_instruction_map)
 
         if self._debug_display is None:
             print(summary)
