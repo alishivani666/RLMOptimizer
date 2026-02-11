@@ -21,6 +21,9 @@ dev = [
     "pytest",
     "ruff",
 ]
+rich = [
+    "rich>=13.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["rlmoptimizer"]

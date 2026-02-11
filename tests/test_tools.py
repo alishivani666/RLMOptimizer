@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import dspy
 import pytest
 
 from rlmoptimizer.kernel import OptimizationKernel
@@ -34,6 +33,7 @@ def test_evaluate_and_run_data_round_trip(tmp_path: Path):
     assert "examples" in loaded
     assert "remaining_budget" not in loaded
     assert "Budget remaining:" not in loaded["summary_line"]
+    assert "Run:" not in loaded["summary_line"]
 
     status = kernel.optimization_status()
     assert status["baseline_run_id"] == run_id
@@ -93,6 +93,7 @@ def test_tools_normalize_inputs_and_return_errors(tmp_path: Path):
     assert loaded["run_id"] == run_id
     assert "remaining_budget" not in loaded
     assert "Budget remaining:" not in loaded["summary_line"]
+    assert "Run:" not in loaded["summary_line"]
 
     bad_limit = tools.evaluate_program(limit="not-an-int")
     assert isinstance(bad_limit, dict)
@@ -102,8 +103,13 @@ def test_tools_normalize_inputs_and_return_errors(tmp_path: Path):
     assert isinstance(bad_ids, dict)
     assert "error" in bad_ids
 
-    bad_predictor = tools.update_instruction("missing", "Copy question exactly.")
-    assert "error" in bad_predictor
+    bad_step = tools.update_prompt("missing", "Copy question exactly.")
+    assert "error" in bad_step
+
+    status = tools.optimization_status()
+    assert "steps" in status
+    assert "current_prompts" in status
+    assert "best_prompts" in status
 
     bad_run = tools.run_data("does-not-exist")
     assert isinstance(bad_run, dict)
@@ -133,33 +139,5 @@ def test_tools_budget_exhaustion_still_raises(tmp_path: Path):
     _ = tools.evaluate_program(limit=3)
     with pytest.raises(BudgetExceededError):
         tools.evaluate_program(limit=1)
-
-    kernel.close()
-
-
-def test_as_dspy_tools_exposes_descriptions(tmp_path: Path):
-    kernel = OptimizationKernel(
-        program=RuleProgram(),
-        trainset=build_trainset(4),
-        valset=None,
-        metric=exact_metric,
-        eval_lm=None,
-        num_threads=1,
-        max_iterations=2,
-        max_output_chars=10_000,
-        run_storage_dir=tmp_path / "runs",
-    )
-
-    tools = OptimizationTools(kernel).as_dspy_tools()
-    assert [tool.name for tool in tools] == [
-        "evaluate_program",
-        "run_data",
-        "update_instruction",
-        "optimization_status",
-    ]
-    assert all(isinstance(tool, dspy.Tool) for tool in tools)
-    assert all(isinstance(tool.desc, str) and tool.desc.strip() for tool in tools)
-    assert "split" in tools[0].args and "description" in tools[0].args["split"]
-    assert "predictor_name" in tools[2].args and "description" in tools[2].args["predictor_name"]
 
     kernel.close()

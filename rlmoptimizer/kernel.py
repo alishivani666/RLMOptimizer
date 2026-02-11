@@ -44,6 +44,7 @@ class OptimizationKernel:
         max_iterations: int,
         max_output_chars: int,
         run_storage_dir: Path | None = None,
+        debug_display: Any | None = None,
     ) -> None:
         if max_iterations <= 0:
             raise ValueError("max_iterations must be greater than zero")
@@ -76,6 +77,7 @@ class OptimizationKernel:
             best_instruction_map=dict(initial_instruction_map),
         )
         self._baseline_structure_hash = structure_hash(self.program)
+        self._debug_display = debug_display
 
     def close(self) -> None:
         if self._storage_tempdir is not None:
@@ -209,7 +211,7 @@ class OptimizationKernel:
         payload["remaining_budget"] = self.state.remaining_budget
         summary = (
             f"Score: {payload['score']}% | {payload['passed_count']}/{payload['evaluated_count']} passed "
-            f"| Budget remaining: {self.state.remaining_budget} | Run: {run_id}"
+            f"| Budget remaining: {self.state.remaining_budget}"
         )
         payload["summary_line"] = summary
 
@@ -231,7 +233,8 @@ class OptimizationKernel:
             self.state.best_run_id = run_id
             self.state.best_instruction_map = dict(self.state.current_instruction_map)
 
-        print(summary)
+        if self._debug_display is None:
+            print(summary)
         return payload
 
     def _progress_callback_with_reporter(
@@ -239,7 +242,7 @@ class OptimizationKernel:
         *,
         external_callback: Callable[[dict[str, Any]], None] | None,
     ) -> tuple[Callable[[dict[str, Any]], None] | None, ProgressReporter | None]:
-        reporter = create_progress_reporter()
+        reporter = create_progress_reporter(use_rich=self._debug_display is not None)
 
         def dispatch(event: dict[str, Any]) -> None:
             try:
@@ -279,8 +282,7 @@ class OptimizationKernel:
     def _summary_line_without_budget(self, payload: dict[str, Any]) -> str:
         return (
             f"Score: {payload['score']}% | "
-            f"{payload['passed_count']}/{payload['evaluated_count']} passed | "
-            f"Run: {payload['run_id']}"
+            f"{payload['passed_count']}/{payload['evaluated_count']} passed"
         )
 
     def run_data(self, run_id: str) -> dict[str, Any]:

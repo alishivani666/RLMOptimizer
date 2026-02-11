@@ -78,8 +78,8 @@ class ScriptedSession:
         )
 
         return {
-            "final_report": "Updated 'step' instruction to copy question exactly.",
-            "suggested_best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": "[step]\nPrompt: \"Copy question exactly.\"",
+            "best_run_id": kernel.state.best_run_id,
             "trajectory": [
                 {
                     "action": "update_instruction",

@@ -27,7 +27,7 @@ def test_kernel_progress_dispatches_internal_and_external_callbacks(
     reporter = _RecorderReporter()
     created_modes: list[str] = []
 
-    def _fake_create():
+    def _fake_create(**_kwargs):
         created_modes.append("created")
         return reporter
 
@@ -69,8 +69,9 @@ class _ProgressSession:
         del objective
         _ = kernel.optimization_status()
         return {
-            "final_report": "ok",
-            "suggested_best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": "",
+            "best_run_id": kernel.state.best_run_id,
+            "agent_report": "ok",
             "trajectory": [],
             "final_reasoning": "",
         }

@@ -35,6 +35,7 @@ response.txt
 
 # Internal docs (not part of initial public release)
 docs/
+examples/
 
 # Benchmarks are intentionally excluded from initial public release
 benchmarks/
@@ -47,3 +48,4 @@ rlmoptimizer/benchmarks/
 **/bm25s_retriever/
 **/wiki.abstracts*.jsonl
 trace.md
+demo_trajectory.py

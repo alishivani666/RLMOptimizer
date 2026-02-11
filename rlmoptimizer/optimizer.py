@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import dspy
 from dspy.teleprompt.teleprompt import Teleprompter
 
+from .debugger import create_debug_display
+from .fingerprint import instruction_map
 from .kernel import OptimizationKernel
 from .rlm_session import RLMSession
 from .types import BudgetExceededError
+
+
+def _accepts_param(func: Any, name: str) -> bool:
+    """Return True if *func* explicitly accepts *name* or has **kwargs."""
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return False
+    for param in sig.parameters.values():
+        if param.name == name:
+            return True
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
 
 
 class RLMDocstringOptimizer(Teleprompter):
@@ -85,12 +102,8 @@ class RLMDocstringOptimizer(Teleprompter):
         return copy.deepcopy(student)
 
     def _objective_text(self, train_size: int, val_size: int) -> str:
-        return (
-            "Optimize predictor signature instructions to maximize evaluation score. "
-            f"Train set: {train_size} examples. "
-            + (f"Val set: {val_size} examples. " if val_size > 0 else "")
-            + "When you are done, finish with SUBMIT(final_report=..., suggested_best_run_id=...)."
-        )
+        val_part = f"Val set: {val_size} instances. " if val_size else ""
+        return f"Train set: {train_size} instances. {val_part}When finished, call SUBMIT(optimized_dspy_program=..., best_run_id=...)."
 
     def compile(
         self,
@@ -112,6 +125,7 @@ class RLMDocstringOptimizer(Teleprompter):
 
         program = self._clone_program(student)
         eval_lm = self._resolve_eval_lm()
+        debug_display = create_debug_display(verbose=self.verbose)
 
         kernel = OptimizationKernel(
             program=program,
@@ -123,51 +137,92 @@ class RLMDocstringOptimizer(Teleprompter):
             max_iterations=self.max_iterations,
             max_output_chars=self.rlm_max_output_chars,
             run_storage_dir=self.run_storage_dir,
+            debug_display=debug_display,
         )
 
         try:
-            kernel.run_baseline()
+            if debug_display is not None:
+                debug_display.show_header(
+                    model=str(getattr(self.root_lm, "model", "unknown")),
+                    train_size=len(trainset),
+                    val_size=len(valset) if valset is not None else 0,
+                )
 
-            session = self.session_cls(
-                root_lm=self.root_lm,
-                sub_lm=self.sub_lm,
-                max_iterations=self.rlm_max_iterations,
-                max_llm_calls=self.rlm_max_llm_calls,
-                max_output_chars=self.rlm_max_output_chars,
-                verbose=self.verbose,
-                rlm_factory=self.rlm_factory,
-            )
+            baseline_payload = kernel.run_baseline()
+
+            if debug_display is not None:
+                predictors = sorted(instruction_map(program).keys())
+                debug_display.show_baseline(
+                    score=float(baseline_payload.get("score", 0)),
+                    budget=kernel.state.remaining_budget,
+                    predictors=predictors,
+                )
+
+            session_kwargs: dict[str, Any] = {
+                "root_lm": self.root_lm,
+                "sub_lm": self.sub_lm,
+                "max_iterations": self.rlm_max_iterations,
+                "max_llm_calls": self.rlm_max_llm_calls,
+                "max_output_chars": self.rlm_max_output_chars,
+                "verbose": self.verbose,
+                "rlm_factory": self.rlm_factory,
+            }
+            if _accepts_param(self.session_cls.__init__, "debug_display"):
+                session_kwargs["debug_display"] = debug_display
+            session = self.session_cls(**session_kwargs)
 
             session_result: dict[str, Any] = {}
             try:
-                session_result = session.run(
-                    kernel,
-                    objective=self._objective_text(
+                run_kwargs: dict[str, Any] = {}
+                if _accepts_param(session.run, "objective"):
+                    run_kwargs["objective"] = self._objective_text(
                         train_size=len(trainset),
                         val_size=len(valset) if valset is not None else 0,
-                    ),
-                )
+                    )
+                session_result = session.run(kernel, **run_kwargs)
             except BudgetExceededError:
                 # Budget exhaustion is a normal hard-stop path.
                 session_result = {
-                    "final_report": "Stopped due to budget exhaustion.",
-                    "suggested_best_run_id": kernel.state.best_run_id or "",
+                    "optimized_dspy_program": "",
+                    "best_run_id": kernel.state.best_run_id or "",
+                    "agent_report": "Stopped due to budget exhaustion.",
                     "trajectory": [],
                     "final_reasoning": "",
                 }
 
             kernel.restore_best_instructions()
 
+            if debug_display is not None:
+                debug_display.show_final_summary(
+                    baseline_score=float(baseline_payload.get("score", 0)),
+                    best_score=kernel.state.best_score,
+                    budget_used=kernel.max_budget - kernel.state.remaining_budget,
+                    total_budget=kernel.max_budget,
+                    iterations=len(kernel.state.runs),
+                )
+
             program.trial_logs = kernel.trial_logs()
             program.best_score = kernel.state.best_score
             program.best_run_id = kernel.state.best_run_id
             program.baseline_run_id = kernel.state.baseline_run_id
-            program.agent_report = session_result.get("final_report", "")
-            program.agent_suggested_best_run_id = session_result.get(
-                "suggested_best_run_id", ""
+            program.agent_optimized_dspy_program = session_result.get(
+                "optimized_dspy_program", ""
+            )
+            agent_best_run_id = str(
+                session_result.get("best_run_id")
+                or kernel.state.best_run_id
+                or ""
+            )
+            program.agent_best_run_id = agent_best_run_id
+            program.agent_report = str(
+                session_result.get("agent_report")
+                or session_result.get("final_reasoning")
+                or ""
             )
             program.agent_trajectory = session_result.get("trajectory", [])
             program.agent_final_reasoning = session_result.get("final_reasoning", "")
             return program
         finally:
+            if debug_display is not None:
+                debug_display.close()
             kernel.close()

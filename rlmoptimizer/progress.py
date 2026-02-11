@@ -89,7 +89,70 @@ class DspyStyleProgressReporter:
         )
 
 
-def create_progress_reporter() -> ProgressReporter:
+class RichProgressReporter:
+    """Progress reporter using rich.progress instead of tqdm."""
+
+    def __init__(self) -> None:
+        from rich.progress import (
+            BarColumn,
+            MofNCompleteColumn,
+            Progress,
+            TextColumn,
+            TimeRemainingColumn,
+        )
+
+        self._progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+        )
+        self._task_id: Any | None = None
+        self._score_sum = 0.0
+        self._finished_count = 0
+
+    def handle_event(self, event: dict[str, Any]) -> None:
+        stage = event.get("stage")
+        if stage == "evaluation_started":
+            total = _coerce_int(event.get("total")) or 0
+            self._score_sum = 0.0
+            self._finished_count = 0
+            self._progress.start()
+            self._task_id = self._progress.add_task("Evaluating...", total=total)
+            return
+        if stage != "example_finished":
+            return
+
+        score = _coerce_float(event.get("score")) or 0.0
+        self._finished_count += 1
+        self._score_sum += score
+
+        if self._task_id is not None:
+            if self._finished_count > 0:
+                pct = round(100 * self._score_sum / self._finished_count, 1)
+            else:
+                pct = 0.0
+            self._progress.update(
+                self._task_id,
+                advance=1,
+                description=f"Average Metric: {self._score_sum:.2f} / {self._finished_count} ({pct}%)",
+            )
+
+    def close(self) -> None:
+        try:
+            self._progress.stop()
+        except Exception:
+            pass
+
+
+def create_progress_reporter(*, use_rich: bool = False) -> ProgressReporter:
+    if use_rich:
+        try:
+            import rich  # noqa: F401
+
+            return RichProgressReporter()
+        except ImportError:
+            pass
     return DspyStyleProgressReporter()
 
 

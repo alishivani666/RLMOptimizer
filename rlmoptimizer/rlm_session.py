@@ -1,109 +1,169 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 import dspy
+from dspy.primitives.prediction import Prediction
 
 from .budgeting import BudgetMeteredLM
 from .kernel import OptimizationKernel
 from .tools import OptimizationTools
 
 
-class OptimizationAgentSignature(dspy.Signature):
-    """You are a prompt optimization agent. Your goal is to maximize evaluation score by rewriting predictor instructions in a program.
+class _InstrumentedRLM(dspy.RLM):
+    """RLM subclass that fires a callback after each iteration for debugger display."""
 
-    ## What you are optimizing
+    def __init__(self, *args: Any, iteration_callback: Any = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._iteration_callback = iteration_callback
 
-    The program under optimization makes one or more LLM calls to process inputs and produce outputs. Each LLM call point is a "predictor". Each predictor has a named "instruction" — a text string the LLM reads as its task description before producing output. In multi-step programs, predictors are chained: the output of one flows as input to the next, so the instruction at each step shapes the entire downstream chain.
+    def _execute_iteration(self, repl, variables, history, iteration, input_args, output_field_names):
+        result = super()._execute_iteration(repl, variables, history, iteration, input_args, output_field_names)
 
-    Call `optimization_status()` to see which predictors exist and their current instructions. It returns a dict with `predictors` (list of names) and `current_instructions` (name → instruction text). Modify instructions with `update_instruction(predictor_name, new_text)`.
+        if self._iteration_callback is not None:
+            if isinstance(result, Prediction):
+                traj = result.trajectory
+                output_text = traj[-1]["output"] if traj else ""
+            else:
+                output_text = result.entries[-1].output if result.entries else ""
+            # Extract reasoning/code from the latest history entry
+            if isinstance(result, Prediction):
+                traj = result.trajectory
+                reasoning = traj[-1].get("reasoning", "") if traj else ""
+                code = traj[-1].get("code", "") if traj else ""
+            else:
+                last = result.entries[-1] if result.entries else None
+                reasoning = last.reasoning if last else ""
+                code = last.code if last else ""
+            try:
+                self._iteration_callback(
+                    iteration, self.max_iterations,
+                    reasoning, code, output_text,
+                )
+            except Exception:
+                pass
 
-    ## Evaluation data schema
+        return result
 
-    `evaluate_program(...)` runs the program on examples and scores outputs. It returns a dict:
 
-        {
-            "score": <float, 0-100 percent>,
-            "evaluated_count": <int>,
-            "passed_count": <int>,
-            "run_id": "<string>",
-            "remaining_budget": <int>,
-            "summary_line": "<one-line summary>",
-            "examples": [
-                {
-                    "example_id": "<string>",
-                    "inputs": { <field>: <value>, ... },
-                    "expected": { <field>: <value>, ... },
-                    "predicted": { <field>: <value>, ... },
-                    "score": <float>,
-                    "passed": <bool>,
-                    "error_text": <string or null>,
-                    "steps": [
-                        {
-                            "step_index": <int>,
-                            "step_name": "<module class>",
-                            "signature_name": "<signature class or null>",
-                            "inputs": { <field>: <value>, ... },
-                            "outputs": { <field>: <value>, ... }
-                        }, ...
-                    ]
-                }, ...
-            ]
-        }
+def _field_type_name(field: Any) -> str:
+    annotation = getattr(field, "annotation", None)
+    if annotation is None:
+        return "Any"
+    if isinstance(annotation, str):
+        return annotation
+    name = getattr(annotation, "__name__", None)
+    if isinstance(name, str) and name:
+        return name
+    return str(annotation).replace("typing.", "")
 
-    `run_data(run_id)` returns the stored run WITHOUT consuming budget and omits
-    `remaining_budget`.
 
-    ## Per-step traces: your most important diagnostic
+def _field_desc(field: Any) -> str:
+    extra = getattr(field, "json_schema_extra", None) or {}
+    desc = str(extra.get("desc", "")).strip()
+    return desc or "No description provided."
 
-    The `steps` array in each example shows what each predictor received as input and produced as output. When the program gives a wrong final answer, the steps trace tells you WHERE in the pipeline the error first appeared:
-    - Was the first predictor's output already wrong?
-    - Did a later predictor misinterpret correct upstream output?
-    - Did the final predictor fail to synthesize correct intermediate results?
-    Always inspect step-level inputs/outputs for failed examples — this is far more informative than only comparing final predicted vs. expected.
 
-    ## Using llm_query / llm_query_batched for analysis
+def _field_group(field: Any) -> str:
+    extra = getattr(field, "json_schema_extra", None) or {}
+    return str(extra.get("__dspy_field_type", "")).strip().lower()
 
-    Large tool outputs may be truncated. Use `llm_query(prompt)` and `llm_query_batched(prompts_list)` to send data to a sub-LLM (~500K chars capacity) for semantic analysis. These are your primary tools for understanding failure patterns:
-    - Build a prompt containing a failed example's inputs, expected output, predicted output, and per-step traces, then ask the sub-LLM to classify the failure type and identify which step introduced the error.
-    - Use `llm_query_batched` to analyze many failed examples in parallel, then synthesize the responses to find common patterns.
-    - Feed step-level traces to the sub-LLM and ask it to explain what each predictor did wrong.
 
-    ## Writing good predictor instructions
+def _render_program_text(
+    program: dspy.Module,
+    *,
+    instruction_overrides: dict[str, str] | None = None,
+) -> str:
+    sections: list[str] = []
+    overrides = instruction_overrides or {}
 
-    Each predictor instruction is a system prompt for one LLM call in the pipeline. Effective instructions:
-    - Clearly describe the task given the predictor's specific input and output fields.
-    - Anticipate failure modes you observed in the data and explicitly address them (e.g., "Output only the entity name, not a full sentence", "If the passages do not contain the answer, say so rather than guessing").
-    - Specify format requirements when the metric is sensitive to format (exact match needs precise output).
-    - For multi-step pipelines, make each instruction aware of its role — what upstream context it receives and what downstream steps need from its output.
-    - Be specific and concrete. Vague instructions like "produce the answer" yield worse results than "Extract the specific factual answer to the question from the provided passages. Output only the answer phrase with no additional explanation."
+    for step_name, predictor in program.named_predictors():
+        signature = getattr(predictor, "signature", None)
+        prompt_text = str(
+            overrides.get(step_name, getattr(signature, "instructions", "") or "")
+        )
+
+        inputs: list[str] = []
+        outputs: list[str] = []
+        if signature is not None and hasattr(signature, "fields"):
+            for field_name, field in signature.fields.items():
+                spec = (
+                    f"- {field_name} ({_field_type_name(field)}): {_field_desc(field)}"
+                )
+                group = _field_group(field)
+                if group == "input":
+                    inputs.append(spec)
+                elif group == "output":
+                    outputs.append(spec)
+
+        lines = [
+            f"[{step_name}]",
+            f"Prompt: {json.dumps(prompt_text, ensure_ascii=True)}",
+            "Inputs:",
+            *(inputs or ["- None"]),
+            "Outputs:",
+            *(outputs or ["- None"]),
+        ]
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+class PromptOptimizationSignature(dspy.Signature):
+    """You are optimizing prompts in an LLM program.
+
+    The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do. Your job is to rewrite these prompts so the program achieves a higher score on the evaluation metric.
+
+    ## What you can change
+
+    You can only modify prompt text. Use `update_prompt()` to rewrite one step's prompt. The program structure—which steps exist, their inputs and outputs—is fixed.
+
+    ## Diagnosing failures
+
+    Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool.
+
+    When the final output is wrong, trace back through the steps to find where the error first appeared. In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
+
+    ## Running experiments
+
+    Use `evaluate_program()` to test your changes. Key arguments for efficient experimentation:
+
+    - `limit`: Evaluate a subset (e.g., `limit=15`) for quick iteration instead of the full dataset.
+    - `sample`: With `limit`, use `sample='random'` to select a representative random subset instead of always the first N. Use `sample_seed` for reproducibility.
+    - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id). The most budget-efficient way to check if a fix worked.
+    - `ids`: Target specific instances by ID (e.g., `ids='3,7,12'` or `ids='10-20'`).
+    - `split`: Use `'train'` for experimentation. Reserve `'val'` for final validation to confirm generalization.
+
+    Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
+
+    Use `optimization_status()` to check current prompts, remaining budget, and best score achieved.
 
     ## Budget
 
-    Every evaluation and every LM call (including yours) consumes shared budget. When budget reaches zero, optimization ends immediately. Be efficient:
-    - Use `limit` to evaluate small subsets when iterating.
-    - Use `failed_from_run` to re-evaluate only examples that failed in a previous run.
-    - Use `ids` to target specific examples you want to investigate.
-    - Check `optimization_status()` for remaining budget before large evaluations.
+    Each instance evaluated costs one budget unit. Budget is shown in `total_budget_remaining`. When budget reaches zero, optimization ends immediately. The experimental strategies above help you spend it wisely.
     """
 
-    objective: str = dspy.InputField(
-        desc="Task-specific optimization goal and dataset context."
+    unoptimized_dspy_program: str = dspy.InputField(
+        desc=(
+            "An LLM program with multiple steps. Each step has a prompt that instructs "
+            "the LLM, plus defined inputs and outputs showing what the LLM receives and "
+            "what it must produce."
+        )
     )
-    baseline_run_id: str = dspy.InputField(
-        desc="Run ID of the initial baseline evaluation (before any instruction changes)."
+    unoptimized_baseline_summary: str = dspy.InputField(
+        desc="Current score and pass rate of the unoptimized program."
     )
-    baseline_summary: str = dspy.InputField(
-        desc="One-line score and budget summary from the baseline run."
-    )
-
-    final_report: str = dspy.OutputField(
-        desc="Summary of what was tried, what worked, what failed, and final recommendation."
-    )
-    suggested_best_run_id: str = dspy.OutputField(
-        desc="Run ID of the best-performing evaluation run."
+    total_budget_remaining: int = dspy.InputField(
+        desc="How many evaluations you can run. Each dataset instance evaluated costs one unit."
     )
 
+    optimized_dspy_program: str = dspy.OutputField(
+        desc="The rewritten prompts for each step that achieved the best score."
+    )
+    best_run_id: str = dspy.OutputField(
+        desc="The run ID where the optimized prompts were validated."
+    )
 
 class RLMSession:
     def __init__(
@@ -116,6 +176,7 @@ class RLMSession:
         max_output_chars: int,
         verbose: bool,
         rlm_factory: Callable[..., Any] | None = None,
+        debug_display: Any | None = None,
     ) -> None:
         self._root_lm = root_lm
         self._sub_lm = sub_lm
@@ -124,15 +185,20 @@ class RLMSession:
         self._max_output_chars = int(max_output_chars)
         self._verbose = bool(verbose)
         self._rlm_factory = rlm_factory
+        self._debug_display = debug_display
+
+    def _rlm_verbose_enabled(self) -> bool:
+        """Enable DSPy text logs only when no rich debugger is active."""
+        return self._verbose and self._debug_display is None
 
     def _build_rlm(self, tools: OptimizationTools, *, sub_lm: Any | None) -> Any:
         rlm_tools = tools.as_dspy_tools()
         kwargs = {
-            "signature": OptimizationAgentSignature,
+            "signature": PromptOptimizationSignature,
             "max_iterations": self._max_iterations,
             "max_llm_calls": self._max_llm_calls,
             "max_output_chars": self._max_output_chars,
-            "verbose": self._verbose,
+            "verbose": self._rlm_verbose_enabled(),
             "tools": rlm_tools,
             "sub_lm": sub_lm,
         }
@@ -140,9 +206,20 @@ class RLMSession:
         if self._rlm_factory is not None:
             return self._rlm_factory(**kwargs)
 
+        if self._debug_display is not None:
+            return _InstrumentedRLM(
+                iteration_callback=self._debug_display.show_iteration, **kwargs
+            )
+
         return dspy.RLM(**kwargs)
 
-    def run(self, kernel: OptimizationKernel, *, objective: str) -> dict[str, Any]:
+    def run(
+        self,
+        kernel: OptimizationKernel,
+        *,
+        objective: str | None = None,
+    ) -> dict[str, Any]:
+        del objective
         tools = OptimizationTools(kernel)
         root_lm = BudgetMeteredLM(lm=self._root_lm, budget_consumer=kernel, source="root")
         sub_lm = (
@@ -153,25 +230,39 @@ class RLMSession:
         rlm = self._build_rlm(tools, sub_lm=sub_lm)
 
         baseline_run_id = kernel.state.baseline_run_id or ""
-        baseline_payload = (
-            kernel.run_data_raw(baseline_run_id)
-            if baseline_run_id
-            else {"summary_line": ""}
-        )
-        baseline_summary = str(baseline_payload.get("summary_line", ""))
+        baseline_payload = kernel.run_data(baseline_run_id) if baseline_run_id else {"summary_line": ""}
+        unoptimized_baseline_summary = str(baseline_payload.get("summary_line", ""))
+        unoptimized_dspy_program = _render_program_text(kernel.program)
 
         with dspy.context(lm=root_lm):
             prediction = rlm(
-                objective=objective,
-                baseline_run_id=baseline_run_id,
-                baseline_summary=baseline_summary,
+                unoptimized_dspy_program=unoptimized_dspy_program,
+                unoptimized_baseline_summary=unoptimized_baseline_summary,
+                total_budget_remaining=int(kernel.state.remaining_budget),
+            )
+
+        best_run_id = str(getattr(prediction, "best_run_id", "") or kernel.state.best_run_id or "")
+        optimized_dspy_program = str(getattr(prediction, "optimized_dspy_program", "")).strip()
+        if not optimized_dspy_program:
+            optimized_dspy_program = _render_program_text(
+                kernel.program,
+                instruction_overrides=kernel.state.best_instruction_map,
+            )
+        agent_report = str(
+            getattr(prediction, "agent_report", "")
+            or getattr(prediction, "final_reasoning", "")
+        ).strip()
+        if not agent_report:
+            agent_report = (
+                f"Optimization completed. Best run id: {best_run_id}."
+                if best_run_id
+                else "Optimization completed."
             )
 
         return {
-            "final_report": str(getattr(prediction, "final_report", "")),
-            "suggested_best_run_id": str(
-                getattr(prediction, "suggested_best_run_id", "")
-            ),
+            "optimized_dspy_program": optimized_dspy_program,
+            "best_run_id": best_run_id,
+            "agent_report": agent_report,
             "trajectory": getattr(prediction, "trajectory", []),
             "final_reasoning": getattr(prediction, "final_reasoning", ""),
         }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import dspy
 
 from rlmoptimizer.budgeting import BudgetMeteredLM
@@ -40,8 +42,8 @@ def _budgeting_factory(**kwargs):
             if sub_lm is not None:
                 sub_lm("sub-1")
             return dspy.Prediction(
-                final_report="done",
-                suggested_best_run_id="",
+                optimized_dspy_program="",
+                best_run_id="",
                 trajectory=[],
                 final_reasoning="",
             )
@@ -73,7 +75,8 @@ def test_kernel_charges_root_and_sub_lm_calls():
     )
     result = session.run(kernel, objective="budget test")
 
-    assert result["final_report"] == "done"
+    assert result["best_run_id"] == kernel.state.best_run_id
+    assert "[step]" in result["optimized_dspy_program"]
     assert kernel.state.evaluated_examples == 4
     assert kernel.state.root_lm_calls == 2
     assert kernel.state.sub_lm_calls == 1
@@ -129,3 +132,55 @@ def test_budget_metered_lm_is_dspy_baselm_compatible():
 
     assert isinstance(wrapped, dspy.BaseLM)
     assert lm is wrapped
+
+
+def test_rlm_session_baseline_summary_omits_run_id():
+    captured_inputs: dict[str, Any] = {}
+
+    def capture_factory(**_kwargs):
+        class Agent:
+            def __call__(self, **inputs):
+                captured_inputs.update(inputs)
+                return dspy.Prediction(
+                    optimized_dspy_program="",
+                    best_run_id="",
+                    trajectory=[],
+                    final_reasoning="",
+                )
+
+        return Agent()
+
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=2,
+        max_output_chars=20_000,
+    )
+    baseline = kernel.run_baseline()
+    baseline_run_id = str(baseline["run_id"])
+    baseline_summary = kernel.run_data(baseline_run_id)["summary_line"]
+
+    session = RLMSession(
+        root_lm=DummyLM("root"),
+        sub_lm=None,
+        max_iterations=10,
+        max_llm_calls=10,
+        max_output_chars=20_000,
+        verbose=False,
+        rlm_factory=capture_factory,
+    )
+    _ = session.run(kernel, objective="baseline summary test")
+
+    assert captured_inputs["unoptimized_baseline_summary"] == baseline_summary
+    assert baseline_run_id not in captured_inputs["unoptimized_baseline_summary"]
+    assert "Budget remaining" not in captured_inputs["unoptimized_baseline_summary"]
+    assert captured_inputs["total_budget_remaining"] == kernel.state.remaining_budget
+    assert "[step]" in captured_inputs["unoptimized_dspy_program"]
+    assert "Inputs:" in captured_inputs["unoptimized_dspy_program"]
+    assert "Outputs:" in captured_inputs["unoptimized_dspy_program"]
+
+    kernel.close()

@@ -16,14 +16,15 @@ class FakeSession:
         pass
 
     def run(self, kernel, *, objective: str):
-        assert "Optimize predictor signature instructions" in objective
+        del objective
         kernel.optimization_status()
         kernel.evaluate_program(split="train", limit=1)
         kernel.update_instruction("step", "Copy question exactly.")
         kernel.evaluate_program(split="train")
         return {
-            "final_report": "completed",
-            "suggested_best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": "optimized",
+            "best_run_id": kernel.state.best_run_id,
+            "agent_report": "completed",
             "trajectory": [],
             "final_reasoning": "reasoning",
         }
@@ -38,10 +39,26 @@ class ThreadCheckSession:
         status = kernel.optimization_status()
         assert status["num_threads"] == 3
         return {
-            "final_report": "thread-check",
-            "suggested_best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": "",
+            "best_run_id": kernel.state.best_run_id,
+            "agent_report": "thread-check",
             "trajectory": [],
             "final_reasoning": "",
+        }
+
+
+class FinalReasoningOnlySession:
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    def run(self, kernel, *, objective: str):
+        del objective
+        kernel.optimization_status()
+        return {
+            "optimized_dspy_program": "",
+            "best_run_id": kernel.state.best_run_id,
+            "trajectory": [],
+            "final_reasoning": "reasoning-only summary",
         }
 
 
@@ -81,6 +98,23 @@ def test_compile_returns_best_checkpoint_program():
     assert len(optimized.trial_logs) == 3
     assert optimized.agent_final_reasoning == "reasoning"
     assert optimized(question="hello").answer == "hello"
+
+
+def test_compile_sets_agent_report_from_final_reasoning_when_report_missing():
+    optimizer = RLMDocstringOptimizer(
+        max_iterations=3,
+        root_lm=dspy.LM("openai/mock-root"),
+        eval_lm=dspy.LM("openai/mock-eval"),
+        session_cls=FinalReasoningOnlySession,
+    )
+
+    optimized = optimizer.compile(
+        student=RuleProgram(),
+        trainset=build_trainset(3),
+        metric=exact_metric,
+    )
+
+    assert optimized.agent_report == "reasoning-only summary"
 
 
 def test_rejects_model_name_strings_for_root_lm():
