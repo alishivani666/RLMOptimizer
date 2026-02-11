@@ -13,6 +13,46 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 _TOOL_ERRORS = (InstructionUpdateError, UnknownRunError, TypeError, ValueError)
 
 
+class _DisplayPayload(dict[str, Any]):
+    """Dict payload with a concise print representation for REPL readability."""
+
+    def __init__(self, *args: Any, display_text: str | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.display_text = str(display_text or "")
+
+    def __str__(self) -> str:
+        if self.display_text:
+            return self.display_text
+        return dict.__repr__(self)
+
+
+def _sanitize_tool_payload(value: Any) -> Any:
+    """Normalize payload values so Pyodide REPL code receives Python-native types.
+
+    Pyodide maps JSON ``null`` values to ``JsNull`` by default. Downstream RLM
+    analysis code often slices/indices payload values and can crash with
+    ``'JsNull' object is not subscriptable``. We convert ``None`` to empty
+    strings at the tool boundary to keep payloads string-safe and avoid runtime
+    crashes inside the interpreter.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, _DisplayPayload):
+        return _DisplayPayload(
+            {str(k): _sanitize_tool_payload(v) for k, v in value.items()},
+            display_text=value.display_text,
+        )
+    if isinstance(value, dict):
+        return {str(k): _sanitize_tool_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_tool_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_tool_payload(item) for item in value]
+    if isinstance(value, set):
+        return [_sanitize_tool_payload(item) for item in value]
+    return value
+
+
 def _tool_method(func: _F) -> _F:
     """Wrap a tool method so user-facing errors become ``{"error": msg}`` dicts.
 
@@ -23,7 +63,8 @@ def _tool_method(func: _F) -> _F:
     @functools.wraps(func)
     def wrapper(self: OptimizationTools, *args: Any, **kwargs: Any) -> Any:
         try:
-            return func(self, *args, **kwargs)
+            result = func(self, *args, **kwargs)
+            return _sanitize_tool_payload(result)
         except BudgetExceededError:
             raise
         except _TOOL_ERRORS as exc:
@@ -42,6 +83,10 @@ def _normalize_optional_int(value: Any, *, field_name: str) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise TypeError(f"{field_name} must be an int, float, string integer, or null.")
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
@@ -58,7 +103,10 @@ def _normalize_ids(ids: str | int | list[str | int] | None) -> str | None:
     if isinstance(ids, int):
         return str(ids)
     if isinstance(ids, str):
-        return ids
+        text = ids.strip()
+        if not text:
+            return None
+        return text
     if isinstance(ids, list):
         parts: list[str] = []
         for item in ids:
@@ -83,6 +131,8 @@ def _normalize_sample(sample: str | None) -> str:
     if not isinstance(sample, str):
         raise TypeError("sample must be 'first', 'random', or null.")
     normalized = sample.strip().lower()
+    if normalized == "":
+        return "first"
     if normalized not in {"first", "random"}:
         raise ValueError("sample must be one of: first, random.")
     return normalized
@@ -102,7 +152,9 @@ def _normalize_run_id(
     if isinstance(run_id, str):
         text = run_id.strip()
         if not text:
-            raise ValueError(f"{field_name} must not be empty.")
+            if required:
+                raise ValueError(f"{field_name} must not be empty.")
+            return None
         return text
     raise TypeError(f"{field_name} must be a run ID string or integer.")
 
@@ -208,7 +260,11 @@ class OptimizationTools:
         )
         if "predictor_name" in result:
             result["step_name"] = str(result.pop("predictor_name"))
-        return result
+        display_name = str(result.get("step_name", step_name))
+        return _DisplayPayload(
+            result,
+            display_text=f'Prompt for "{display_name}" was successfully updated.',
+        )
 
     @_tool_method
     def optimization_status(self) -> dict[str, Any]:

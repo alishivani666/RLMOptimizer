@@ -11,6 +11,16 @@ from rlmoptimizer.types import BudgetExceededError
 from ._helpers import RuleProgram, build_trainset, exact_metric
 
 
+def _contains_none(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_none(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_none(item) for item in value)
+    return False
+
+
 def test_evaluate_and_run_data_round_trip(tmp_path: Path):
     kernel = OptimizationKernel(
         program=RuleProgram(),
@@ -139,5 +149,89 @@ def test_tools_budget_exhaustion_still_raises(tmp_path: Path):
     _ = tools.evaluate_program(limit=3)
     with pytest.raises(BudgetExceededError):
         tools.evaluate_program(limit=1)
+
+    kernel.close()
+
+
+def test_update_prompt_prints_readable_success_message(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(3),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=3,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    response = tools.update_prompt("step", "Copy question exactly.")
+    print(response)
+    printed = capsys.readouterr().out.strip()
+
+    assert printed == 'Prompt for "step" was successfully updated.'
+    assert response["status"] == "ok"
+    assert response["step_name"] == "step"
+    assert "instruction_hash" in response
+
+    kernel.close()
+
+
+def test_tools_payloads_are_sanitized_for_none_values(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(3),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=3,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    payload = tools.evaluate_program(limit=2)
+    loaded = tools.run_data(payload["run_id"])
+    status = tools.optimization_status()
+
+    assert _contains_none(payload) is False
+    assert _contains_none(loaded) is False
+    assert _contains_none(status) is False
+
+    kernel.close()
+
+
+def test_tools_allow_round_trip_with_sanitized_optional_config_values(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(5),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=4,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    payload = tools.evaluate_program(limit=2)
+    config = payload["config"]
+
+    replay = tools.evaluate_program(
+        split=config["split"],
+        limit=config["limit"],
+        ids=config["ids"],
+        sample=config["sample"],
+        sample_seed=config["sample_seed"],
+        failed_from_run=config["failed_from_run"],
+    )
+
+    assert isinstance(replay, dict)
+    assert "error" not in replay
+    assert replay["evaluated_count"] == 2
 
     kernel.close()
