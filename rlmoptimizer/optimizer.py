@@ -23,7 +23,7 @@ class RLMDocstringOptimizer(Teleprompter):
         num_threads: int = 1,
         rlm_max_iterations: int = 200,
         rlm_max_llm_calls: int = 200,
-        rlm_max_output_chars: int = 100_000,
+        rlm_max_output_chars: int = 10000,
         verbose: bool = False,
         run_storage_dir: str | Path | None = None,
         rlm_factory: Callable[..., Any] | None = None,
