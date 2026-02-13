@@ -165,30 +165,42 @@ def _render_program_text(
 
 
 class PromptOptimizationSignature(dspy.Signature):
-    """You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do. Your job is to rewrite these prompts so the program achieves a higher score on the evaluation metric.
+    """You are optimizing prompts in an LLM program. You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
 
-    ## What you can change
-    You can only modify prompt text. Use `update_prompt()` to rewrite one step's prompt. The program structure-which steps exist, their inputs and outputs-is fixed.
-
-    ## Diagnosing failures
-    Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool. When the final output is wrong, trace back through the steps to find where the error first appeared. In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
+    ## Goal
+    - Achieve 100% `best_score` or get as close as possible by optimizing the prompts before you run out of budget.
+    - The `best_score` is only updated when you run a ull evaluation on the validation subset of the dataset.
+    - Whenever you believe you achieve a new significantly improved score on the "train" subset of the dataset, validate those prompts by evaluating them on the validation subset of the dataset as well.
+    - Use `optimization_status()` to see your current `best_score`, current prompts and remaining budget.
 
     ## Running experiments
-    Use `evaluate_program()` to test your changes. Key arguments for efficient experimentation:
-    - `limit`: Evaluate a subset (e.g., `limit=15`) for quick iteration instead of the full dataset.
-    - `sample`: With `limit`, use `sample='random'` to select a representative random subset instead of always the first N. Use `sample_seed` for reproducibility.
-    - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id). The most budget-efficient way to check if a fix worked.
-    - `ids`: Target specific instances by ID (e.g., `ids='3,7,12'` or `ids='10-20'`).
-    - `split`: Use `'train'` for experimentation. Reserve `'val'` for final validation to confirm generalization.
-    Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
-    Use `optimization_status()` to check current prompts, remaining budget, and best score achieved.
+    - Use `evaluate_program()` to test your changes. Key arguments for efficient experimentation:
+        - `limit`: Evaluate a subset (e.g., `limit=15`) for quick iteration instead of the full dataset.
+        - `sample`: With `limit`, use `sample='random'` to select a representative random subset instead of always the first N. Use `sample_seed` for reproducibility.
+        - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id). The most budget-efficient way to check if a fix worked.
+        - `ids`: Target specific instances by ID (e.g., `ids='3,7,12'` or `ids='10-20'`).
+        - `split`: Use `'train'` for experimentation. Reserve `'val'` for final validation to confirm generalization.
+    - Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
+
+    ## Diagnosing failures
+    - Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool. When the final output is wrong, trace back through the steps to find where the error first appeared.
+    - In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
+
+    ## What you can change
+    - You can only modify prompt text. Use `update_prompt()` to rewrite one step's prompt.
+    - The program structure-which steps exist, their inputs and outputs-is fixed.
 
     ## Budget
-    Each instance evaluated costs one budget unit. Budget is shown in `total_budget_remaining`. When budget reaches zero, optimization ends immediately. The experimental strategies above help you spend it wisely.
+    - Each instance evaluated costs one budget unit. Budget is shown in `total_budget_remaining`.
+    - When budget reaches zero, optimization ends immediately.
 
-    ## Code output format
-    Use exactly one markdown code block: opening ```python, your code, then closing ```.
-    Do not add any extra ``` markers or text after the closing fence - the interpreter strips fences before execution, so extra markers will remain and cause a Python SyntaxError."""
+    ## Coding Environment
+    - Output exactly one code block per response, formatted as: ```python <code> ```
+    - Do not add extra ``` markers or text after the closing fence—they because will cause a SyntaxError.
+    - Your environment persists across iterations:
+        - Imports, variables, and functions stay available in later iterations.
+        - Define helpers early and reuse them. Do not rewrite the same code each turn.
+    - Printed output that exceeds the per-iteration character limit is truncated. However, only the display is cut short. The actual data itself is not lost."""
 
     unoptimized_dspy_program: str = dspy.InputField(
         desc=(
