@@ -1,50 +1,104 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
 
 import dspy
+from dspy.predict.rlm import _strip_code_fences
+from dspy.primitives.code_interpreter import CodeInterpreterError
 from dspy.primitives.prediction import Prediction
 
 from .budgeting import BudgetMeteredLM
 from .kernel import OptimizationKernel
+from .root_state import maybe_wrap_stateful_root_lm
 from .tools import OptimizationTools
+
+logger = logging.getLogger(__name__)
 
 
 class _InstrumentedRLM(dspy.RLM):
-    """RLM subclass that fires a callback after each iteration for debugger display."""
+    """RLM subclass that emits start/output callbacks for each iteration."""
 
-    def __init__(self, *args: Any, iteration_callback: Any = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        iteration_start_callback: Callable[[int, int, str, str], None] | None = None,
+        iteration_output_callback: Callable[[str], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self._iteration_callback = iteration_callback
+        self._iteration_start_callback = iteration_start_callback
+        self._iteration_output_callback = iteration_output_callback
 
     def _execute_iteration(self, repl, variables, history, iteration, input_args, output_field_names):
-        result = super()._execute_iteration(repl, variables, history, iteration, input_args, output_field_names)
+        variables_info = [variable.format() for variable in variables]
+        action = self.generate_action(
+            variables_info=variables_info,
+            repl_history=history,
+            iteration=f"{iteration + 1}/{self.max_iterations}",
+        )
+        if self.verbose:
+            logger.info(
+                f"RLM iteration {iteration + 1}/{self.max_iterations}\n"
+                f"Reasoning: {action.reasoning}\nCode:\n{action.code}"
+            )
 
-        if self._iteration_callback is not None:
-            if isinstance(result, Prediction):
-                traj = result.trajectory
-                output_text = traj[-1]["output"] if traj else ""
-            else:
-                output_text = result.entries[-1].output if result.entries else ""
-            # Extract reasoning/code from the latest history entry
-            if isinstance(result, Prediction):
-                traj = result.trajectory
-                reasoning = traj[-1].get("reasoning", "") if traj else ""
-                code = traj[-1].get("code", "") if traj else ""
-            else:
-                last = result.entries[-1] if result.entries else None
-                reasoning = last.reasoning if last else ""
-                code = last.code if last else ""
-            try:
-                self._iteration_callback(
-                    iteration, self.max_iterations,
-                    reasoning, code, output_text,
-                )
-            except Exception:
-                pass
+        code = self._normalize_code(action.code)
+        self._emit_iteration_start(
+            iteration=iteration,
+            reasoning=action.reasoning,
+            code=code,
+        )
+
+        try:
+            execution_result = repl.execute(code, variables=dict(input_args))
+        except (CodeInterpreterError, SyntaxError) as exc:
+            execution_result = f"[Error] {exc}"
+
+        result = self._process_execution_result(
+            action, execution_result, history, output_field_names
+        )
+        self._emit_iteration_output(self._extract_output_text(result))
 
         return result
+
+    def _emit_iteration_start(
+        self, *, iteration: int, reasoning: str, code: str
+    ) -> None:
+        self._safe_display_call(
+            self._iteration_start_callback,
+            iteration,
+            self.max_iterations,
+            str(reasoning),
+            str(code),
+        )
+
+    def _emit_iteration_output(self, output: str) -> None:
+        self._safe_display_call(self._iteration_output_callback, output)
+
+    def _safe_display_call(self, callback: Callable[..., None] | None, *args: Any) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            pass
+
+    def _normalize_code(self, code: Any) -> str:
+        return _strip_code_fences(str(code))
+
+    def _extract_output_text(self, result: Prediction | Any) -> str:
+        if isinstance(result, Prediction):
+            trajectory = result.trajectory
+            if not trajectory:
+                return ""
+            return str(trajectory[-1].get("output", ""))
+
+        entries = getattr(result, "entries", None)
+        if not entries:
+            return ""
+        return str(getattr(entries[-1], "output", ""))
 
 
 def _field_type_name(field: Any) -> str:
@@ -111,38 +165,30 @@ def _render_program_text(
 
 
 class PromptOptimizationSignature(dspy.Signature):
-    """You are optimizing prompts in an LLM program.
-
-    The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do. Your job is to rewrite these prompts so the program achieves a higher score on the evaluation metric.
+    """You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do. Your job is to rewrite these prompts so the program achieves a higher score on the evaluation metric.
 
     ## What you can change
-
-    You can only modify prompt text. Use `update_prompt()` to rewrite one step's prompt. The program structure—which steps exist, their inputs and outputs—is fixed.
+    You can only modify prompt text. Use `update_prompt()` to rewrite one step's prompt. The program structure-which steps exist, their inputs and outputs-is fixed.
 
     ## Diagnosing failures
-
-    Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool.
-
-    When the final output is wrong, trace back through the steps to find where the error first appeared. In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
+    Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool. When the final output is wrong, trace back through the steps to find where the error first appeared. In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
 
     ## Running experiments
-
     Use `evaluate_program()` to test your changes. Key arguments for efficient experimentation:
-
     - `limit`: Evaluate a subset (e.g., `limit=15`) for quick iteration instead of the full dataset.
     - `sample`: With `limit`, use `sample='random'` to select a representative random subset instead of always the first N. Use `sample_seed` for reproducibility.
     - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id). The most budget-efficient way to check if a fix worked.
     - `ids`: Target specific instances by ID (e.g., `ids='3,7,12'` or `ids='10-20'`).
     - `split`: Use `'train'` for experimentation. Reserve `'val'` for final validation to confirm generalization.
-
     Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
-
     Use `optimization_status()` to check current prompts, remaining budget, and best score achieved.
 
     ## Budget
-
     Each instance evaluated costs one budget unit. Budget is shown in `total_budget_remaining`. When budget reaches zero, optimization ends immediately. The experimental strategies above help you spend it wisely.
-    """
+
+    ## Code output format
+    Use exactly one markdown code block: opening ```python, your code, then closing ```.
+    Do not add any extra ``` markers or text after the closing fence - the interpreter strips fences before execution, so extra markers will remain and cause a Python SyntaxError."""
 
     unoptimized_dspy_program: str = dspy.InputField(
         desc=(
@@ -177,6 +223,7 @@ class RLMSession:
         verbose: bool,
         rlm_factory: Callable[..., Any] | None = None,
         debug_display: Any | None = None,
+        root_stateful_session: bool = True,
     ) -> None:
         self._root_lm = root_lm
         self._sub_lm = sub_lm
@@ -186,10 +233,31 @@ class RLMSession:
         self._verbose = bool(verbose)
         self._rlm_factory = rlm_factory
         self._debug_display = debug_display
+        self._root_stateful_session = bool(root_stateful_session)
 
     def _rlm_verbose_enabled(self) -> bool:
         """Enable DSPy text logs only when no rich debugger is active."""
         return self._verbose and self._debug_display is None
+
+    def _show_stateful_status(self) -> bool:
+        return self._verbose or self._debug_display is not None
+
+    def _build_root_lm_for_run(self) -> Any:
+        if not self._root_stateful_session:
+            return self._root_lm
+
+        wrapped, issue = maybe_wrap_stateful_root_lm(self._root_lm)
+        if issue is not None and self._show_stateful_status():
+            logger.warning(
+                "Stateful root session disabled; falling back to stateless root LM: %s",
+                issue,
+            )
+
+        reset_session = getattr(wrapped, "reset_session", None)
+        if callable(reset_session):
+            reset_session()
+
+        return wrapped
 
     def _build_rlm(self, tools: OptimizationTools, *, sub_lm: Any | None) -> Any:
         rlm_tools = tools.as_dspy_tools()
@@ -208,7 +276,9 @@ class RLMSession:
 
         if self._debug_display is not None:
             return _InstrumentedRLM(
-                iteration_callback=self._debug_display.show_iteration, **kwargs
+                iteration_start_callback=self._debug_display.show_iteration_start,
+                iteration_output_callback=self._debug_display.show_iteration_output,
+                **kwargs,
             )
 
         return dspy.RLM(**kwargs)
@@ -221,7 +291,11 @@ class RLMSession:
     ) -> dict[str, Any]:
         del objective
         tools = OptimizationTools(kernel)
-        root_lm = BudgetMeteredLM(lm=self._root_lm, budget_consumer=kernel, source="root")
+        root_lm = BudgetMeteredLM(
+            lm=self._build_root_lm_for_run(),
+            budget_consumer=kernel,
+            source="root",
+        )
         sub_lm = (
             BudgetMeteredLM(lm=self._sub_lm, budget_consumer=kernel, source="sub")
             if self._sub_lm is not None

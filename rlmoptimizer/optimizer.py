@@ -40,7 +40,8 @@ class RLMDocstringOptimizer(Teleprompter):
         num_threads: int = 1,
         rlm_max_iterations: int = 200,
         rlm_max_llm_calls: int = 200,
-        rlm_max_output_chars: int = 10000,
+        rlm_max_output_chars: int = 2000,
+        root_stateful_session: bool = True,
         verbose: bool = False,
         run_storage_dir: str | Path | None = None,
         rlm_factory: Callable[..., Any] | None = None,
@@ -57,12 +58,15 @@ class RLMDocstringOptimizer(Teleprompter):
             raise ValueError("rlm_max_llm_calls must be greater than zero")
         if rlm_max_output_chars <= 0:
             raise ValueError("rlm_max_output_chars must be greater than zero")
+        if not isinstance(root_stateful_session, bool):
+            raise TypeError("root_stateful_session must be a bool")
 
         self.max_iterations = int(max_iterations)
         self.num_threads = int(num_threads)
         self.rlm_max_iterations = int(rlm_max_iterations)
         self.rlm_max_llm_calls = int(rlm_max_llm_calls)
         self.rlm_max_output_chars = int(rlm_max_output_chars)
+        self.root_stateful_session = root_stateful_session
         self.verbose = bool(verbose)
         self.run_storage_dir = (
             Path(run_storage_dir).resolve() if run_storage_dir is not None else None
@@ -169,6 +173,8 @@ class RLMDocstringOptimizer(Teleprompter):
             }
             if _accepts_param(self.session_cls.__init__, "debug_display"):
                 session_kwargs["debug_display"] = debug_display
+            if _accepts_param(self.session_cls.__init__, "root_stateful_session"):
+                session_kwargs["root_stateful_session"] = self.root_stateful_session
             session = self.session_cls(**session_kwargs)
 
             session_result: dict[str, Any] = {}

@@ -62,6 +62,23 @@ class FinalReasoningOnlySession:
         }
 
 
+class StatefulFlagSession:
+    def __init__(self, *, root_stateful_session: bool, **_kwargs) -> None:
+        self._root_stateful_session = root_stateful_session
+
+    def run(self, kernel, *, objective: str):
+        del objective
+        assert self._root_stateful_session is False
+        kernel.optimization_status()
+        return {
+            "optimized_dspy_program": "",
+            "best_run_id": kernel.state.best_run_id,
+            "agent_report": "stateful-flag-check",
+            "trajectory": [],
+            "final_reasoning": "",
+        }
+
+
 def test_optimizer_is_teleprompter_compatible():
     optimizer = RLMDocstringOptimizer(
         max_iterations=3,
@@ -159,6 +176,32 @@ def test_compile_forwards_num_threads_to_kernel():
         trainset=build_trainset(3),
         metric=exact_metric,
     )
+
+
+def test_compile_forwards_root_stateful_session_flag_to_session():
+    optimizer = RLMDocstringOptimizer(
+        max_iterations=3,
+        root_lm=dspy.LM("openai/mock-root"),
+        eval_lm=dspy.LM("openai/mock-eval"),
+        root_stateful_session=False,
+        session_cls=StatefulFlagSession,
+    )
+    _ = optimizer.compile(
+        student=RuleProgram(),
+        trainset=build_trainset(3),
+        metric=exact_metric,
+    )
+
+
+def test_rejects_non_bool_root_stateful_session():
+    with pytest.raises(TypeError, match="root_stateful_session must be a bool"):
+        RLMDocstringOptimizer(
+            max_iterations=3,
+            root_lm=dspy.LM("openai/mock-root"),
+            eval_lm=dspy.LM("openai/mock-eval"),
+            root_stateful_session="yes",  # type: ignore[arg-type]
+            session_cls=FakeSession,
+        )
 
 
 def test_rejects_non_positive_num_threads():

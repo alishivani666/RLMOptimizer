@@ -274,7 +274,15 @@ class OptimizationKernel:
         *,
         external_callback: Callable[[dict[str, Any]], None] | None,
     ) -> tuple[Callable[[dict[str, Any]], None] | None, ProgressReporter | None]:
-        reporter = create_progress_reporter(use_rich=self._debug_display is not None)
+        console = (
+            self._debug_display.progress_console()
+            if self._debug_display is not None
+            else None
+        )
+        reporter = create_progress_reporter(
+            use_rich=self._debug_display is not None,
+            console=console,
+        )
 
         def dispatch(event: dict[str, Any]) -> None:
             try:

@@ -40,7 +40,7 @@ from rlmoptimizer import RLMDocstringOptimizer
 
 optimizer = RLMDocstringOptimizer(
     max_iterations=5,
-    root_lm=dspy.LM("openai/gpt-5"),        # the optimizer agent
+    root_lm=dspy.LM("openai/gpt-5", model_type="responses"),  # stateful optimizer agent
     sub_lm=dspy.LM("openai/gpt-5-mini"),     # used by the agent for analysis
     eval_lm=dspy.LM("openai/gpt-5-mini"),    # runs your program during evaluation
 )
@@ -108,9 +108,12 @@ RLMDocstringOptimizer(
     rlm_max_iterations=200,     # max agent loop iterations
     rlm_max_llm_calls=200,      # max sub-LM calls the agent can make
     rlm_max_output_chars=100000,# max output size per agent iteration
+    root_stateful_session=True, # auto-thread previous_response_id for root_lm when compatible
     verbose=False,              # print agent trajectory
 )
 ```
+
+Stateful root sessions require `root_lm` in Responses mode (`model_type="responses"`). If the root model is not compatible (for example chat mode, or `store=False`), optimization still runs but root reasoning state is not threaded across turns.
 
 The returned program has extra attributes:
 

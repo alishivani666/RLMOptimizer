@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class DebugDisplay(Protocol):
@@ -16,14 +16,15 @@ class DebugDisplay(Protocol):
         self, *, score: float, budget: int, steps: list[str]
     ) -> None: ...
 
-    def show_iteration(
+    def show_iteration_start(
         self,
         iteration: int,
         max_iterations: int,
         reasoning: str,
         code: str,
-        output: str,
     ) -> None: ...
+
+    def show_iteration_output(self, output: str) -> None: ...
 
     def show_final_summary(
         self,
@@ -34,6 +35,8 @@ class DebugDisplay(Protocol):
         total_budget: int,
         iterations: int,
     ) -> None: ...
+
+    def progress_console(self) -> Any | None: ...
 
     def close(self) -> None: ...
 
@@ -87,13 +90,12 @@ class RichDebugDisplay:
             Panel(table, title="[bold]Baseline[/bold]", border_style="red")
         )
 
-    def show_iteration(
+    def show_iteration_start(
         self,
         iteration: int,
         max_iterations: int,
         reasoning: str,
         code: str,
-        output: str,
     ) -> None:
         from rich.panel import Panel
         from rich.syntax import Syntax
@@ -128,6 +130,11 @@ class RichDebugDisplay:
             )
         )
 
+    def show_iteration_output(self, output: str) -> None:
+        from rich.panel import Panel
+        from rich.text import Text
+
+        self._console.print()
         self._console.print(
             Panel(
                 Text(output),
@@ -187,6 +194,9 @@ class RichDebugDisplay:
         self._console.print()
         self._console.print(table)
         self._console.print()
+
+    def progress_console(self) -> Any:
+        return self._console
 
     def close(self) -> None:
         pass
