@@ -47,12 +47,12 @@ def _sha256_text(text: str) -> str:
     return digest.hexdigest()
 
 
-def instruction_map(program: dspy.Module) -> dict[str, str]:
+def prompt_map(program: dspy.Module) -> dict[str, str]:
     mapping: dict[str, str] = {}
-    for name, predictor in program.named_predictors():
-        signature = getattr(predictor, "signature", None)
-        instructions = getattr(signature, "instructions", "")
-        mapping[name] = str(instructions or "")
+    for name, step_module in program.named_predictors():
+        signature = getattr(step_module, "signature", None)
+        prompt_text = getattr(signature, "instructions", "")
+        mapping[name] = str(prompt_text or "")
     return mapping
 
 
@@ -72,28 +72,28 @@ def _field_specs(signature: type[dspy.Signature]) -> list[dict[str, Any]]:
     return specs
 
 
-def _demo_hash(predictor: Any) -> str:
-    demos = getattr(predictor, "demos", [])
+def _demo_hash(step_module: Any) -> str:
+    demos = getattr(step_module, "demos", [])
     serialized = json.dumps(_safe_json(demos), ensure_ascii=True, sort_keys=True)
     return _sha256_text(serialized)
 
 
 def structure_fingerprint(program: dspy.Module) -> dict[str, Any]:
-    predictors: list[dict[str, Any]] = []
-    for name, predictor in sorted(program.named_predictors(), key=lambda item: item[0]):
-        signature = getattr(predictor, "signature", None)
-        predictors.append(
+    steps: list[dict[str, Any]] = []
+    for name, step_module in sorted(program.named_predictors(), key=lambda item: item[0]):
+        signature = getattr(step_module, "signature", None)
+        steps.append(
             {
                 "name": name,
-                "predictor_class": (
-                    f"{predictor.__class__.__module__}.{predictor.__class__.__qualname__}"
+                "step_class": (
+                    f"{step_module.__class__.__module__}.{step_module.__class__.__qualname__}"
                 ),
                 "fields": _field_specs(signature),
-                "demo_hash": _demo_hash(predictor),
+                "demo_hash": _demo_hash(step_module),
             }
         )
 
-    return {"predictors": predictors}
+    return {"steps": steps}
 
 
 def structure_hash(program: dspy.Module) -> str:
@@ -103,10 +103,10 @@ def structure_hash(program: dspy.Module) -> str:
     return _sha256_text(serialized)
 
 
-def apply_instruction_map(program: dspy.Module, updates: dict[str, str]) -> None:
-    predictors = {name: predictor for name, predictor in program.named_predictors()}
+def apply_prompt_map(program: dspy.Module, updates: dict[str, str]) -> None:
+    step_modules = {name: module for name, module in program.named_predictors()}
     for name, text in updates.items():
-        if name not in predictors:
+        if name not in step_modules:
             continue
-        predictor = predictors[name]
-        predictor.signature = predictor.signature.with_instructions(text)
+        step_module = step_modules[name]
+        step_module.signature = step_module.signature.with_instructions(text)

@@ -49,26 +49,7 @@ Deliver correct, high-signal, well-structured changes. Prioritize genuine unders
 - The scope of a rewrite should be proportional to the task. If you're fixing a function and that function is a mess, rewrite the function. If the mess spans a whole module and the task only requires touching one function, rewrite the function and flag the broader issue — don't silently rewrite the module.
 - Prefer clarity over cleverness. Write code that is easy to read, easy to trace, and easy to delete.
 
-## 5) Research and Exploration
-
-### Use the `explorer` sub-agent liberally
-- For any read-only task — understanding code paths, tracing data flow, reading documentation, surveying file structure, checking how something is used across the codebase — delegate to `explorer` sub-agents.
-- Parallelize multiple `explorer` agents when investigating different aspects of a problem simultaneously.
-- Use `explorer` agents BEFORE implementing. Never start writing code until you have a clear picture of the relevant context.
-
-### Do NOT use the `worker` sub-agent
-- All implementation must be done by you directly. Do not delegate code changes to `worker` agents.
-
-### Use Exa MCP for external knowledge
-- When working with unfamiliar packages, APIs, tools, or libraries, search documentation and usage examples via Exa before guessing at how something works.
-- If a task involves integrating with or depending on an external tool, search for its current API and conventions rather than relying on your training data, which may be outdated.
-- When an approach isn't working and the reason isn't obvious from the codebase alone, search for known issues, migration guides, or changelogs.
-
-### Cloning external repositories
-- When you need to understand how an external library, tool, or dependency works internally — and documentation alone isn't sufficient — clone the repository, investigate it with `explorer` sub-agents, extract what you need, and then remove the cloned repo when done.
-- This is encouraged when: debugging integration issues, understanding undocumented behavior, or verifying how a dependency actually handles edge cases.
-
-## 6) Persistent Memory
+## 5) Persistent Memory
 
 - Persistent Codex memory is stored outside this repo at `$CODEX_HOME/memory.md`.
 - On this machine, that path resolves to `/Users/ali/.codex/memory.md`.

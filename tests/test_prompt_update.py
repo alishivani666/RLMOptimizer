@@ -6,7 +6,7 @@ import dspy
 import pytest
 
 from rlmoptimizer.kernel import OptimizationKernel
-from rlmoptimizer.types import InstructionUpdateError
+from rlmoptimizer.types import PromptUpdateError
 
 from ._helpers import RuleProgram, build_trainset, exact_metric
 
@@ -25,43 +25,43 @@ def _build_kernel(tmp_path: Path) -> OptimizationKernel:
     )
 
 
-def test_update_instruction_rejects_unknown_predictor(tmp_path: Path):
+def test_update_prompt_rejects_unknown_step(tmp_path: Path):
     kernel = _build_kernel(tmp_path)
     kernel.run_baseline()
 
-    with pytest.raises(InstructionUpdateError):
-        kernel.update_instruction("missing", "New instruction")
+    with pytest.raises(PromptUpdateError):
+        kernel.update_prompt("missing", "New prompt")
 
     kernel.close()
 
 
-def test_update_instruction_allows_noop(tmp_path: Path):
+def test_update_prompt_allows_noop(tmp_path: Path):
     kernel = _build_kernel(tmp_path)
     kernel.run_baseline()
 
-    current = kernel.state.current_instruction_map["step"]
-    result = kernel.update_instruction("step", current)
+    current = kernel.state.current_prompt_map["step"]
+    result = kernel.update_prompt("step", current)
 
     assert result["status"] == "ok"
-    assert kernel.state.current_instruction_map["step"] == current
+    assert kernel.state.current_prompt_map["step"] == current
     kernel.close()
 
 
-def test_update_instruction_rejects_structure_changes(tmp_path: Path, monkeypatch):
+def test_update_prompt_rejects_structure_changes(tmp_path: Path, monkeypatch):
     kernel = _build_kernel(tmp_path)
     kernel.run_baseline()
 
-    predictor = dict(kernel.program.named_predictors())["step"]
-    original_signature = predictor.signature
+    step_module = dict(kernel.program.named_predictors())["step"]
+    original_signature = step_module.signature
     mutated_signature = dspy.Signature("question -> answer, extra", "bad")
 
     def bad_with_instructions(_text: str):
         return mutated_signature
 
-    monkeypatch.setattr(predictor.signature, "with_instructions", bad_with_instructions)
+    monkeypatch.setattr(step_module.signature, "with_instructions", bad_with_instructions)
 
-    with pytest.raises(InstructionUpdateError):
-        kernel.update_instruction("step", "Copy question exactly")
+    with pytest.raises(PromptUpdateError):
+        kernel.update_prompt("step", "Copy question exactly")
 
-    assert predictor.signature is original_signature
+    assert step_module.signature is original_signature
     kernel.close()

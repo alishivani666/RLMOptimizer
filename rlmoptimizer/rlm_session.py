@@ -73,13 +73,13 @@ def _field_group(field: Any) -> str:
 def _render_program_text(
     program: dspy.Module,
     *,
-    instruction_overrides: dict[str, str] | None = None,
+    prompt_overrides: dict[str, str] | None = None,
 ) -> str:
     sections: list[str] = []
-    overrides = instruction_overrides or {}
+    overrides = prompt_overrides or {}
 
-    for step_name, predictor in program.named_predictors():
-        signature = getattr(predictor, "signature", None)
+    for step_name, step_module in program.named_predictors():
+        signature = getattr(step_module, "signature", None)
         prompt_text = str(
             overrides.get(step_name, getattr(signature, "instructions", "") or "")
         )
@@ -246,7 +246,7 @@ class RLMSession:
         if not optimized_dspy_program:
             optimized_dspy_program = _render_program_text(
                 kernel.program,
-                instruction_overrides=kernel.state.best_instruction_map,
+                prompt_overrides=kernel.state.best_prompt_map,
             )
         agent_report = str(
             getattr(prediction, "agent_report", "")

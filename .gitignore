@@ -34,8 +34,7 @@ response.txt
 *.npz
 
 # Internal docs (not part of initial public release)
-docs/
-examples/
+hole/
 
 # Benchmarks are intentionally excluded from initial public release
 benchmarks/

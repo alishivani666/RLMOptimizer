@@ -4,13 +4,13 @@ import dspy
 
 
 class DemoSignature(dspy.Signature):
-    """Initial instructions that do not solve the task."""
+    """Initial prompt text that does not solve the task."""
 
     question: str = dspy.InputField()
     answer: str = dspy.OutputField()
 
 
-class FakePredictor:
+class FakeStep:
     def __init__(self) -> None:
         self.signature = DemoSignature
         self.demos: list[dict[str, str]] = []
@@ -19,7 +19,7 @@ class FakePredictor:
 class RuleProgram(dspy.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.step = FakePredictor()
+        self.step = FakeStep()
 
     def named_predictors(self):
         return [("step", self.step)]
@@ -28,8 +28,8 @@ class RuleProgram(dspy.Module):
         return [self.step]
 
     def forward(self, question: str) -> dspy.Prediction:
-        instructions = self.step.signature.instructions.lower()
-        if "copy question" in instructions:
+        prompt_text = self.step.signature.instructions.lower()
+        if "copy question" in prompt_text:
             return dspy.Prediction(answer=question)
         return dspy.Prediction(answer="wrong")
 

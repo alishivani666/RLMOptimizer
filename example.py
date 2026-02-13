@@ -6,13 +6,13 @@ from rlmoptimizer import RLMDocstringOptimizer
 
 
 class EchoSignature(dspy.Signature):
-    """Initial instructions that do not solve the task."""
+    """Initial prompt text that does not solve the task."""
 
     question: str = dspy.InputField()
     answer: str = dspy.OutputField()
 
 
-class _FakePredictor:
+class _FakeStep:
     def __init__(self) -> None:
         self.signature = EchoSignature
         self.demos: list[dict[str, str]] = []
@@ -21,7 +21,7 @@ class _FakePredictor:
 class DemoProgram(dspy.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.step = _FakePredictor()
+        self.step = _FakeStep()
 
     def named_predictors(self):
         return [("step", self.step)]
@@ -30,8 +30,8 @@ class DemoProgram(dspy.Module):
         return [self.step]
 
     def forward(self, question: str) -> dspy.Prediction:
-        instructions = self.step.signature.instructions.lower()
-        if "copy question" in instructions:
+        prompt_text = self.step.signature.instructions.lower()
+        if "copy question" in prompt_text:
             return dspy.Prediction(answer=question)
         return dspy.Prediction(answer="wrong")
 
@@ -67,7 +67,7 @@ class ScriptedSession:
             f"remaining_budget={before['remaining_budget']}",
         )
 
-        kernel.update_instruction("step", "Copy question exactly.")
+        kernel.update_prompt("step", "Copy question exactly.")
         _ = kernel.evaluate_program(split="train")
 
         after = kernel.optimization_status()
@@ -82,12 +82,12 @@ class ScriptedSession:
             "best_run_id": kernel.state.best_run_id,
             "trajectory": [
                 {
-                    "action": "update_instruction",
-                    "predictor": "step",
+                    "action": "update_prompt",
+                    "step_name": "step",
                     "new_text": "Copy question exactly.",
                 }
             ],
-            "final_reasoning": "The updated instruction aligns outputs with the exact-match metric.",
+            "final_reasoning": "The updated prompt aligns outputs with the exact-match metric.",
         }
 
 
@@ -111,7 +111,7 @@ def main() -> None:
     print("Best run id:", optimized.best_run_id)
     print("Best score:", optimized.best_score)
     print("Final answer for 'hello':", optimized(question="hello").answer)
-    print("Final instruction:", optimized.step.signature.instructions)
+    print("Final prompt:", optimized.step.signature.instructions)
 
 
 if __name__ == "__main__":

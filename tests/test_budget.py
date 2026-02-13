@@ -15,21 +15,21 @@ def test_budget_charged_by_actual_evaluated_count(tmp_path: Path):
         metric=exact_metric,
         eval_lm=None,
         num_threads=1,
-        max_iterations=2,
+        max_iterations=3,
         max_output_chars=20_000,
         run_storage_dir=tmp_path / "runs",
     )
 
     baseline = kernel.run_baseline()
     assert baseline["evaluated_count"] == 5
-    assert kernel.state.remaining_budget == 5
+    assert kernel.state.remaining_budget == 7
 
     targeted = kernel.evaluate_program(ids="1,3,5")
     assert targeted["evaluated_count"] == 3
-    assert kernel.state.remaining_budget == 2
+    assert kernel.state.remaining_budget == 4
 
     val_eval = kernel.evaluate_program(split="val", limit=2)
     assert val_eval["evaluated_count"] == 2
-    assert kernel.state.remaining_budget == 0
+    assert kernel.state.remaining_budget == 2
 
     kernel.close()

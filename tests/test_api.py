@@ -19,7 +19,7 @@ class FakeSession:
         del objective
         kernel.optimization_status()
         kernel.evaluate_program(split="train", limit=1)
-        kernel.update_instruction("step", "Copy question exactly.")
+        kernel.update_prompt("step", "Copy question exactly.")
         kernel.evaluate_program(split="train")
         return {
             "optimized_dspy_program": "optimized",

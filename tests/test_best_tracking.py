@@ -22,19 +22,21 @@ def test_best_tracking_prefers_full_val_runs_when_valset_exists(tmp_path: Path):
 
     baseline = kernel.run_baseline()
     assert baseline["split"] == "train"
-    assert kernel.state.best_run_id is None
-    assert kernel.state.best_score == float("-inf")
+    assert kernel.state.baseline_run_id == baseline["run_id"]
+    assert kernel.state.best_run_id is not None
+    assert kernel.state.best_score == 0.0
+    assert kernel.state.runs[kernel.state.best_run_id].split == "val"
 
-    kernel.update_instruction("step", "Copy question exactly.")
+    kernel.update_prompt("step", "Copy question exactly.")
 
     full_train = kernel.evaluate_program(split="train")
     assert full_train["score"] == 100.0
-    assert kernel.state.best_run_id is None
+    assert kernel.state.runs[kernel.state.best_run_id].split == "val"
 
     val_ids_all = kernel.evaluate_program(split="val", ids="1,2")
     assert val_ids_all["score"] == 100.0
     assert val_ids_all["evaluated_count"] == 2
-    assert kernel.state.best_run_id is None
+    assert kernel.state.runs[kernel.state.best_run_id].split == "val"
 
     full_val = kernel.evaluate_program(split="val", limit=2)
     assert full_val["score"] == 100.0
@@ -63,7 +65,7 @@ def test_best_tracking_uses_full_train_when_no_valset(tmp_path: Path):
     assert kernel.state.best_run_id == baseline["run_id"]
     assert kernel.state.best_score == 0.0
 
-    kernel.update_instruction("step", "Copy question exactly.")
+    kernel.update_prompt("step", "Copy question exactly.")
 
     train_subset = kernel.evaluate_program(split="train", limit=1)
     assert train_subset["score"] == 100.0

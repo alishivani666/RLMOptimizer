@@ -9,8 +9,8 @@ class BudgetExceededError(RuntimeError):
     """Raised when an evaluation would exceed remaining budget."""
 
 
-class InstructionUpdateError(RuntimeError):
-    """Raised when an instruction update is invalid or unsafe."""
+class PromptUpdateError(RuntimeError):
+    """Raised when a prompt update is invalid or unsafe."""
 
 
 class UnknownRunError(KeyError):
@@ -39,6 +39,6 @@ class OptimizationKernelState:
     latest_run_id: str | None = None
     best_run_id: str | None = None
     best_score: float = float("-inf")
-    current_instruction_map: dict[str, str] = field(default_factory=dict)
-    best_instruction_map: dict[str, str] = field(default_factory=dict)
+    current_prompt_map: dict[str, str] = field(default_factory=dict)
+    best_prompt_map: dict[str, str] = field(default_factory=dict)
     runs: dict[str, RunMeta] = field(default_factory=dict)

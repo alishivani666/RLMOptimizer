@@ -174,7 +174,7 @@ def test_update_prompt_prints_readable_success_message(tmp_path: Path, capsys: p
     assert printed == 'Prompt for "step" was successfully updated.'
     assert response["status"] == "ok"
     assert response["step_name"] == "step"
-    assert "instruction_hash" in response
+    assert "prompt_hash" in response
 
     kernel.close()
 
@@ -200,6 +200,32 @@ def test_tools_payloads_are_sanitized_for_none_values(tmp_path: Path):
     assert _contains_none(payload) is False
     assert _contains_none(loaded) is False
     assert _contains_none(status) is False
+
+    kernel.close()
+
+
+def test_tools_payloads_are_sanitized_for_non_finite_floats(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(3),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=3,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    kernel.state.best_score = float("-inf")
+    assert tools.optimization_status()["best_score"] == "-inf"
+
+    kernel.state.best_score = float("inf")
+    assert tools.optimization_status()["best_score"] == "inf"
+
+    kernel.state.best_score = float("nan")
+    assert tools.optimization_status()["best_score"] == "nan"
 
     kernel.close()
 

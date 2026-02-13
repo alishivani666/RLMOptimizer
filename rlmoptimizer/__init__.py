@@ -1,9 +1,9 @@
 from .optimizer import RLMDocstringOptimizer
-from .types import BudgetExceededError, InstructionUpdateError, UnknownRunError
+from .types import BudgetExceededError, PromptUpdateError, UnknownRunError
 
 __all__ = [
     "RLMDocstringOptimizer",
     "BudgetExceededError",
-    "InstructionUpdateError",
+    "PromptUpdateError",
     "UnknownRunError",
 ]

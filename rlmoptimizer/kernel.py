@@ -10,11 +10,11 @@ from uuid import uuid4
 import dspy
 
 from .evaluator import DatasetRow, build_dataset_rows, evaluate_rows, parse_ids, select_rows
-from .fingerprint import apply_instruction_map, instruction_map, structure_hash
+from .fingerprint import apply_prompt_map, prompt_map, structure_hash
 from .progress import ProgressReporter, create_progress_reporter
 from .types import (
     BudgetExceededError,
-    InstructionUpdateError,
+    PromptUpdateError,
     OptimizationKernelState,
     RunMeta,
     UnknownRunError,
@@ -70,11 +70,11 @@ class OptimizationKernel:
             self.run_storage_dir = run_storage_dir
             self.run_storage_dir.mkdir(parents=True, exist_ok=True)
 
-        initial_instruction_map = instruction_map(self.program)
+        initial_prompt_map = prompt_map(self.program)
         self.state = OptimizationKernelState(
             remaining_budget=self.max_budget,
-            current_instruction_map=dict(initial_instruction_map),
-            best_instruction_map=dict(initial_instruction_map),
+            current_prompt_map=dict(initial_prompt_map),
+            best_prompt_map=dict(initial_prompt_map),
         )
         self._baseline_structure_hash = structure_hash(self.program)
         self._debug_display = debug_display
@@ -105,10 +105,15 @@ class OptimizationKernel:
             self._storage_tempdir = None
 
     def run_baseline(self) -> dict[str, Any]:
-        payload = self._evaluate_program_raw(split="train")
-        baseline_run_id = str(payload["run_id"])
-        self.state.baseline_run_id = baseline_run_id
-        return payload
+        train_payload = self._evaluate_program_raw(split="train")
+        self.state.baseline_run_id = str(train_payload["run_id"])
+
+        # When val exists, initialize best-tracking on the same split used for
+        # best-run selection so comparisons stay val-to-val.
+        if self._best_tracking_split() == "val":
+            self._evaluate_program_raw(split="val")
+
+        return train_payload
 
     def _run_path(self, run_id: str) -> Path:
         return self.run_storage_dir / f"{run_id}.json"
@@ -258,7 +263,7 @@ class OptimizationKernel:
             if self.state.best_run_id is None or score > self.state.best_score:
                 self.state.best_score = score
                 self.state.best_run_id = run_id
-                self.state.best_instruction_map = dict(self.state.current_instruction_map)
+                self.state.best_prompt_map = dict(self.state.current_prompt_map)
 
         if self._debug_display is None:
             print(summary)
@@ -320,47 +325,47 @@ class OptimizationKernel:
         payload["summary_line"] = self._summary_line_without_budget(payload)
         return payload
 
-    def update_instruction(self, predictor_name: str, new_text: str) -> dict[str, Any]:
-        if not predictor_name:
-            raise InstructionUpdateError("predictor_name must be provided")
+    def update_prompt(self, step_name: str, new_text: str) -> dict[str, Any]:
+        if not step_name:
+            raise PromptUpdateError("step_name must be provided")
         text = str(new_text).strip()
         if not text:
-            raise InstructionUpdateError("new_text must be non-empty")
+            raise PromptUpdateError("new_text must be non-empty")
 
-        predictors = {name: predictor for name, predictor in self.program.named_predictors()}
-        if predictor_name not in predictors:
-            raise InstructionUpdateError(f"unknown predictor: {predictor_name}")
+        step_modules = {name: module for name, module in self.program.named_predictors()}
+        if step_name not in step_modules:
+            raise PromptUpdateError(f"unknown step: {step_name}")
 
-        predictor = predictors[predictor_name]
-        old_signature = predictor.signature
+        step_module = step_modules[step_name]
+        old_signature = step_module.signature
         before_structure = structure_hash(self.program)
-        before_instructions = instruction_map(self.program)
+        before_prompts = prompt_map(self.program)
 
-        predictor.signature = predictor.signature.with_instructions(text)
+        step_module.signature = step_module.signature.with_instructions(text)
 
         after_structure = structure_hash(self.program)
-        after_instructions = instruction_map(self.program)
+        after_prompts = prompt_map(self.program)
 
         changed = {
             key
-            for key in before_instructions.keys() | after_instructions.keys()
-            if before_instructions.get(key) != after_instructions.get(key)
+            for key in before_prompts.keys() | after_prompts.keys()
+            if before_prompts.get(key) != after_prompts.get(key)
         }
 
         if before_structure != after_structure or (
-            changed and changed != {predictor_name}
+            changed and changed != {step_name}
         ):
-            predictor.signature = old_signature
-            raise InstructionUpdateError(
-                "instruction update rejected: attempted change outside signature.instructions"
+            step_module.signature = old_signature
+            raise PromptUpdateError(
+                "prompt update rejected: attempted change outside signature.instructions"
             )
 
-        self.state.current_instruction_map = after_instructions
+        self.state.current_prompt_map = after_prompts
         return {
             "status": "ok",
-            "predictor_name": predictor_name,
-            "instruction_hash": _sha256_text(text),
-            "instruction_preview": text[:200],
+            "step_name": step_name,
+            "prompt_hash": _sha256_text(text),
+            "prompt_preview": text[:200],
         }
 
     def optimization_status(self) -> dict[str, Any]:
@@ -374,15 +379,15 @@ class OptimizationKernel:
             "best_run_id": self.state.best_run_id,
             "latest_run_id": self.state.latest_run_id,
             "baseline_run_id": self.state.baseline_run_id,
-            "current_instructions": dict(self.state.current_instruction_map),
-            "best_instructions": dict(self.state.best_instruction_map),
-            "predictors": sorted(self.state.current_instruction_map.keys()),
+            "current_prompts": dict(self.state.current_prompt_map),
+            "best_prompts": dict(self.state.best_prompt_map),
+            "steps": sorted(self.state.current_prompt_map.keys()),
         }
         return status
 
-    def restore_best_instructions(self) -> None:
-        apply_instruction_map(self.program, self.state.best_instruction_map)
-        self.state.current_instruction_map = instruction_map(self.program)
+    def restore_best_prompts(self) -> None:
+        apply_prompt_map(self.program, self.state.best_prompt_map)
+        self.state.current_prompt_map = prompt_map(self.program)
 
     def trial_logs(self) -> list[dict[str, Any]]:
         logs: list[dict[str, Any]] = []

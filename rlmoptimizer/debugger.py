@@ -13,7 +13,7 @@ class DebugDisplay(Protocol):
     ) -> None: ...
 
     def show_baseline(
-        self, *, score: float, budget: int, predictors: list[str]
+        self, *, score: float, budget: int, steps: list[str]
     ) -> None: ...
 
     def show_iteration(
@@ -70,7 +70,7 @@ class RichDebugDisplay:
         )
 
     def show_baseline(
-        self, *, score: float, budget: int, predictors: list[str]
+        self, *, score: float, budget: int, steps: list[str]
     ) -> None:
         from rich import box
         from rich.panel import Panel
@@ -81,7 +81,7 @@ class RichDebugDisplay:
         table.add_column()
         table.add_row("Baseline Score", f"[red]{score}%[/red]")
         table.add_row("Budget", f"{budget:,}")
-        table.add_row("Predictors", " -> ".join(predictors))
+        table.add_row("Steps", " -> ".join(steps))
         self._console.print()
         self._console.print(
             Panel(table, title="[bold]Baseline[/bold]", border_style="red")

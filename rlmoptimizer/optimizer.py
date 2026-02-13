@@ -9,7 +9,7 @@ import dspy
 from dspy.teleprompt.teleprompt import Teleprompter
 
 from .debugger import create_debug_display
-from .fingerprint import instruction_map
+from .fingerprint import prompt_map
 from .kernel import OptimizationKernel
 from .rlm_session import RLMSession
 from .types import BudgetExceededError
@@ -151,11 +151,11 @@ class RLMDocstringOptimizer(Teleprompter):
             baseline_payload = kernel.run_baseline()
 
             if debug_display is not None:
-                predictors = sorted(instruction_map(program).keys())
+                steps = sorted(prompt_map(program).keys())
                 debug_display.show_baseline(
                     score=float(baseline_payload.get("score", 0)),
                     budget=kernel.state.remaining_budget,
-                    predictors=predictors,
+                    steps=steps,
                 )
 
             session_kwargs: dict[str, Any] = {
@@ -190,7 +190,7 @@ class RLMDocstringOptimizer(Teleprompter):
                     "final_reasoning": "",
                 }
 
-            kernel.restore_best_instructions()
+            kernel.restore_best_prompts()
 
             if debug_display is not None:
                 debug_display.show_final_summary(
