@@ -41,6 +41,8 @@ def test_evaluate_and_run_data_round_trip(tmp_path: Path):
     assert loaded["run_id"] == run_id
     assert loaded["evaluated_count"] == 4
     assert "examples" in loaded
+    assert all("error_text" not in example for example in baseline["examples"])
+    assert all("error_text" not in example for example in loaded["examples"])
     assert "remaining_budget" not in loaded
     assert "Budget remaining:" not in loaded["summary_line"]
     assert "Run:" not in loaded["summary_line"]
@@ -259,5 +261,104 @@ def test_tools_allow_round_trip_with_sanitized_optional_config_values(tmp_path: 
     assert isinstance(replay, dict)
     assert "error" not in replay
     assert replay["evaluated_count"] == 2
+
+    kernel.close()
+
+
+def test_tools_val_runs_are_blind_and_redacted(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=build_trainset(2),
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=4,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    val_payload = tools.evaluate_program(split="val")
+    assert isinstance(val_payload, dict)
+    assert val_payload["split"] == "val"
+    assert val_payload["examples"] == []
+
+    loaded = tools.run_data(val_payload["run_id"])
+    assert isinstance(loaded, dict)
+    assert loaded["run_id"] == val_payload["run_id"]
+    assert loaded["examples"] == []
+    assert "remaining_budget" not in loaded
+
+    train_payload = tools.evaluate_program(split="train", limit=1)
+    assert isinstance(train_payload, dict)
+    assert len(train_payload["examples"]) == 1
+    assert "expected" in train_payload["examples"][0]
+
+    kernel.close()
+
+
+def test_tools_reject_non_full_val_evaluations(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=build_trainset(2),
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=4,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    invalid_calls = [
+        {"limit": 1},
+        {"ids": "1"},
+        {"sample": "random"},
+        {"sample_seed": 42},
+    ]
+    for kwargs in invalid_calls:
+        payload = tools.evaluate_program(split="val", **kwargs)
+        assert isinstance(payload, dict)
+        assert "error" in payload
+        assert "split='val'" in str(payload["error"])
+
+    train_run = tools.evaluate_program(split="train", limit=1)
+    failed_from_run_payload = tools.evaluate_program(
+        split="val",
+        failed_from_run=train_run["run_id"],
+    )
+    assert isinstance(failed_from_run_payload, dict)
+    assert "error" in failed_from_run_payload
+    assert "split='val'" in str(failed_from_run_payload["error"])
+
+    kernel.close()
+
+
+def test_tools_failed_from_run_must_match_split(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=build_trainset(2),
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=4,
+        max_output_chars=10_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+    tools = OptimizationTools(kernel)
+
+    baseline = kernel.run_baseline()
+    assert baseline["split"] == "val"
+
+    mismatch = tools.evaluate_program(
+        split="train",
+        failed_from_run=baseline["run_id"],
+    )
+    assert isinstance(mismatch, dict)
+    assert "error" in mismatch
+    assert "same split" in str(mismatch["error"])
 
     kernel.close()

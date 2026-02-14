@@ -217,13 +217,12 @@ def _evaluate_single_row(
     row: DatasetRow,
     metric: Callable[..., Any],
     eval_lm: Any,
-) -> tuple[dict[str, Any], float, bool, str | None]:
+) -> tuple[dict[str, Any], float, bool]:
     trace: list[tuple[Any, dict[str, Any], Any]] = []
     inputs = row.example.inputs()
     predicted: dict[str, Any]
     score: float
     passed: bool
-    error_text: str | None = None
 
     try:
         if eval_lm is None:
@@ -239,13 +238,12 @@ def _evaluate_single_row(
         predicted = _prediction_to_json(prediction)
     except KeyboardInterrupt:
         raise
-    except Exception as exc:  # pragma: no cover - provider/network/runtime failures.
+    except Exception:  # pragma: no cover - provider/network/runtime failures.
         # Treat transient runtime/provider failures as failed examples so a run
         # can continue and still return actionable diagnostics.
         score = 0.0
         passed = False
         predicted = {}
-        error_text = f"{type(exc).__name__}: {exc}"
 
     record = {
         "example_id": row.example_id,
@@ -256,9 +254,8 @@ def _evaluate_single_row(
         "score": float(score),
         "passed": passed,
         "steps": _trace_to_steps(trace),
-        "error_text": error_text,
     }
-    return record, float(score), passed, error_text
+    return record, float(score), passed
 
 
 def evaluate_rows(
@@ -310,7 +307,7 @@ def evaluate_rows(
                 except Exception:  # pragma: no cover - diagnostics callback must not break eval.
                     pass
 
-            record, score, passed, error_text = _evaluate_single_row(
+            record, score, passed = _evaluate_single_row(
                 program=program,
                 row=row,
                 metric=metric,
@@ -331,7 +328,6 @@ def evaluate_rows(
                             "example_id": row.example_id,
                             "score": float(score),
                             "passed": passed,
-                            "error_text": error_text,
                         }
                     )
                 except Exception:  # pragma: no cover - diagnostics callback must not break eval.
@@ -353,7 +349,7 @@ def evaluate_rows(
 
             for future in as_completed(future_to_meta):
                 index, example_id = future_to_meta[future]
-                record, score, passed, error_text = future.result()
+                record, score, passed = future.result()
                 ordered_records[index - 1] = record
                 passed_count += int(passed)
                 total_score += score
@@ -370,7 +366,6 @@ def evaluate_rows(
                                 "example_id": example_id,
                                 "score": float(score),
                                 "passed": passed,
-                                "error_text": error_text,
                             }
                         )
                     except Exception:  # pragma: no cover - diagnostics callback must not break eval.

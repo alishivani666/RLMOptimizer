@@ -106,14 +106,15 @@ class OptimizationKernel:
 
     def run_baseline(self) -> dict[str, Any]:
         train_payload = self._evaluate_program_raw(split="train")
-        self.state.baseline_run_id = str(train_payload["run_id"])
+        baseline_payload = train_payload
 
         # When val exists, initialize best-tracking on the same split used for
         # best-run selection so comparisons stay val-to-val.
         if self._best_tracking_split() == "val":
-            self._evaluate_program_raw(split="val")
+            baseline_payload = self._evaluate_program_raw(split="val")
 
-        return train_payload
+        self.state.baseline_run_id = str(baseline_payload["run_id"])
+        return self._public_payload_view(baseline_payload)
 
     def _run_path(self, run_id: str) -> Path:
         return self.run_storage_dir / f"{run_id}.json"
@@ -121,10 +122,14 @@ class OptimizationKernel:
     def _new_run_id(self) -> str:
         return uuid4().hex[:8]
 
-    def _load_run_payload(self, run_id: str) -> dict[str, Any]:
+    def _run_meta(self, run_id: str) -> RunMeta:
         meta = self.state.runs.get(run_id)
         if meta is None:
             raise UnknownRunError(f"unknown run id: {run_id}")
+        return meta
+
+    def _load_run_payload(self, run_id: str) -> dict[str, Any]:
+        meta = self._run_meta(run_id)
         return json.loads(meta.storage_path.read_text(encoding="utf-8"))
 
     def _store_run_payload(self, run_id: str, payload: dict[str, Any]) -> Path:
@@ -139,6 +144,64 @@ class OptimizationKernel:
             for record in payload.get("examples", [])
             if not bool(record.get("passed"))
         ]
+
+    def _validate_failed_from_run_split(
+        self,
+        *,
+        split: str,
+        failed_from_run: str | None,
+    ) -> None:
+        if failed_from_run is None:
+            return
+        source_meta = self._run_meta(failed_from_run)
+        if source_meta.split != split:
+            raise ValueError(
+                "failed_from_run must reference a run from the same split; "
+                f"requested split={split!r}, run split={source_meta.split!r}."
+            )
+
+    def _validate_public_evaluation_request(
+        self,
+        *,
+        split: str,
+        limit: int | None,
+        ids: str | None,
+        sample: SampleMode,
+        sample_seed: int | None,
+        failed_from_run: str | None,
+    ) -> None:
+        if split == "val":
+            if limit is not None:
+                raise ValueError(
+                    "split='val' only supports full-split evaluation; limit must be null."
+                )
+            if ids is not None:
+                raise ValueError(
+                    "split='val' only supports full-split evaluation; ids must be null."
+                )
+            if failed_from_run is not None:
+                raise ValueError(
+                    "split='val' only supports full-split evaluation; failed_from_run must be null."
+                )
+            if sample_seed is not None:
+                raise ValueError(
+                    "split='val' only supports full-split evaluation; sample_seed must be null."
+                )
+            if sample != "first":
+                raise ValueError(
+                    "split='val' only supports full-split evaluation; sample must be 'first'."
+                )
+
+        self._validate_failed_from_run_split(
+            split=split,
+            failed_from_run=failed_from_run,
+        )
+
+    def _public_payload_view(self, payload: dict[str, Any]) -> dict[str, Any]:
+        public_payload = dict(payload)
+        if str(public_payload.get("split", "")) == "val":
+            public_payload["examples"] = []
+        return public_payload
 
     def _rows_for_split(self, split: str) -> list[DatasetRow]:
         if split not in self.dataset_rows:
@@ -183,6 +246,10 @@ class OptimizationKernel:
             raise ValueError("sample must be one of: first, random")
 
         rows = self._rows_for_split(split)
+        self._validate_failed_from_run_split(
+            split=split,
+            failed_from_run=failed_from_run,
+        )
 
         selected_ids = parse_ids(ids)
         if failed_from_run is not None:
@@ -240,7 +307,7 @@ class OptimizationKernel:
         )
         payload["summary_line"] = summary
 
-        path = self._store_run_payload(run_id, payload)
+        path = self._store_run_payload(run_id, self._public_payload_view(payload))
         self.state.runs[run_id] = RunMeta(
             run_id=run_id,
             split=split,
@@ -304,6 +371,14 @@ class OptimizationKernel:
         failed_from_run: str | None = None,
         _progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        self._validate_public_evaluation_request(
+            split=split,
+            limit=limit,
+            ids=ids,
+            sample=sample,
+            sample_seed=sample_seed,
+            failed_from_run=failed_from_run,
+        )
         payload = self._evaluate_program_raw(
             split=split,
             limit=limit,
@@ -313,7 +388,7 @@ class OptimizationKernel:
             failed_from_run=failed_from_run,
             _progress_callback=_progress_callback,
         )
-        return payload
+        return self._public_payload_view(payload)
 
     def run_data_raw(self, run_id: str) -> dict[str, Any]:
         payload = self._load_run_payload(run_id)
@@ -326,7 +401,7 @@ class OptimizationKernel:
         )
 
     def run_data(self, run_id: str) -> dict[str, Any]:
-        payload = dict(self.run_data_raw(run_id))
+        payload = self._public_payload_view(dict(self.run_data_raw(run_id)))
         # Historical per-run budget snapshots are intentionally hidden in run_data()
         # to avoid confusion with current shared budget.
         payload.pop("remaining_budget", None)

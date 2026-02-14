@@ -21,7 +21,7 @@ def test_best_tracking_prefers_full_val_runs_when_valset_exists(tmp_path: Path):
     )
 
     baseline = kernel.run_baseline()
-    assert baseline["split"] == "train"
+    assert baseline["split"] == "val"
     assert kernel.state.baseline_run_id == baseline["run_id"]
     assert kernel.state.best_run_id is not None
     assert kernel.state.best_score == 0.0
@@ -33,14 +33,10 @@ def test_best_tracking_prefers_full_val_runs_when_valset_exists(tmp_path: Path):
     assert full_train["score"] == 100.0
     assert kernel.state.runs[kernel.state.best_run_id].split == "val"
 
-    val_ids_all = kernel.evaluate_program(split="val", ids="1,2")
-    assert val_ids_all["score"] == 100.0
-    assert val_ids_all["evaluated_count"] == 2
-    assert kernel.state.runs[kernel.state.best_run_id].split == "val"
-
-    full_val = kernel.evaluate_program(split="val", limit=2)
+    full_val = kernel.evaluate_program(split="val")
     assert full_val["score"] == 100.0
     assert full_val["evaluated_count"] == 2
+    assert full_val["examples"] == []
     assert kernel.state.best_run_id == full_val["run_id"]
     assert kernel.state.best_score == 100.0
 

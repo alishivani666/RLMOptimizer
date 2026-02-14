@@ -209,21 +209,29 @@ class OptimizationTools:
         This tool:
         - charges budget by the exact number of evaluated examples,
         - prints a one-line score/budget summary immediately,
-        - returns per-example outputs and step traces,
+        - returns per-example outputs/traces for train,
+        - returns aggregate-only results for val (examples are redacted),
         - persists the full payload so it can be retrieved later by run ID.
 
         Args:
             split: Dataset split to evaluate. Allowed values: ``train`` or ``val``.
-            limit: Maximum number of selected examples to evaluate.
+                ``val`` only supports full-split evaluation.
+            limit: Maximum number of selected examples to evaluate. Must be null
+                for ``split=val``.
             ids: Optional ID selector string such as ``"1,2,8"`` or ``"10-20"``.
+                Must be null for ``split=val``.
             sample: Selection strategy for ``limit``. ``first`` keeps order,
-                ``random`` samples with replacement disabled.
+                ``random`` samples with replacement disabled. For ``split=val``,
+                sample must be ``first``.
             sample_seed: Optional random seed used only when ``sample=random``.
+                Must be null for ``split=val``.
             failed_from_run: Optional previous run ID. When set, evaluate only
-                examples that failed in that run.
+                examples that failed in that run. Must be null for ``split=val``.
 
         Returns:
-            A dict with run metadata, score summary, selected examples, and traces.
+            A dict with run metadata and score summary. For train runs, this
+            includes per-example diagnostics. For val runs, ``examples`` is
+            always empty.
         """
         return self._kernel.evaluate_program(
             split=split,
@@ -243,12 +251,14 @@ class OptimizationTools:
         Use this to re-open historical runs for comparison or deeper analysis.
         This does not trigger re-evaluation and does not consume budget.
         This response omits ``remaining_budget``.
+        For val runs, per-example details are always redacted.
 
         Args:
             run_id: Run identifier returned by ``evaluate_program``.
 
         Returns:
-            A dict with run-level metrics and per-example details.
+            A dict with run-level metrics. For train runs, includes per-example
+            details. For val runs, ``examples`` is empty.
         """
         return self._kernel.run_data(_normalize_run_id(run_id, field_name="run_id"))
 
@@ -317,7 +327,7 @@ Returns a dict:
     "summary_line": "str. Human-readable one-line summary of results.",
     "split": "str. Which dataset was evaluated: 'train' or 'val'.",
     "config": "dict. The arguments you passed to this call.",
-    "examples": "list[dict]. Per-instance results. One dict per evaluated instance:"
+    "examples": "list[dict]. Per-instance results for train runs. One dict per evaluated instance:"
     [
         {
             "example_id": "str. Identifier for this instance.",
@@ -327,7 +337,6 @@ Returns a dict:
             "predicted": "dict. Output fields the program actually produced.",
             "score": "float. This instance's score on 0.0-1.0 scale. NOTE: This is NOT 0-100 like the top-level score!",
             "passed": "bool. True if this instance passed (score=1.0).",
-            "error_text": "str or null. If the program crashed on this instance, the error message. Otherwise null.",
             "steps": "list[dict]. Execution trace showing what each step received and produced:"
             [
                 {
@@ -342,19 +351,23 @@ Returns a dict:
     ]
 }
 
-The steps list is your primary diagnostic tool. When an instance fails, trace through the steps to find where the error originated. Check: Did step 0 receive correct inputs but produce wrong outputs? Did step 1 receive wrong inputs from step 0? Find the first step that went wrong.""",
+For split='val', evaluation is blind and aggregate-only:
+- examples is always [].
+- per-example labels, predictions, and traces are not returned.
+
+The steps list is your primary diagnostic tool for train runs. When an instance fails, trace through the steps to find where the error originated. Check: Did step 0 receive correct inputs but produce wrong outputs? Did step 1 receive wrong inputs from step 0? Find the first step that went wrong.""",
                 arg_desc={
-                    "split": "str. 'train' or 'val'. Use 'train' for experimentation. Use 'val' only for final validation to confirm your improvements generalize.",
-                    "limit": "int or null. Maximum instances to evaluate. Use small values like 10-20 for quick experiments. Null evaluates all instances.",
-                    "ids": "str or list or null. Evaluate only specific instances. String like '1,2,8' or '10-20', or list like [1, 2, 8]. Null means no filtering.",
-                    "sample": "str. 'first' takes the first N instances in order. 'random' takes a random sample, which better represents the full dataset.",
-                    "sample_seed": "int or null. Seed for reproducible random sampling. Null gives a different random sample each time. Only used when sample='random'.",
-                    "failed_from_run": "str or null. Pass a run_id to evaluate ONLY instances that failed in that run. Most budget-efficient way to test if your changes fixed the failures.",
+                    "split": "str. 'train' or 'val'. Use 'train' for experimentation and diagnostics. Use 'val' for holdout scoring only.",
+                    "limit": "int or null. Train only. Maximum instances to evaluate. For split='val', must be null (full split only).",
+                    "ids": "str or list or null. Train only selector (e.g., '1,2,8' or '10-20'). For split='val', must be null.",
+                    "sample": "str. Train: 'first' or 'random'. For split='val', must be 'first'.",
+                    "sample_seed": "int or null. Train only, used with sample='random'. For split='val', must be null.",
+                    "failed_from_run": "str or null. Train only. Evaluate only examples that failed in a prior train run. For split='val', must be null.",
                 },
             ),
             dspy.Tool(
                 self.run_data,
-                desc="""Retrieve the full results of a previous evaluation. Costs NO budget.
+                desc="""Retrieve results of a previous evaluation. Costs NO budget.
 
 Returns a dict with the same structure as evaluate_program:
 {
@@ -375,7 +388,6 @@ Returns a dict with the same structure as evaluate_program:
             "predicted": "dict.",
             "score": "float. 0.0-1.0 scale.",
             "passed": "bool.",
-            "error_text": "str or null.",
             "steps": "list[dict]:"
             [
                 {
@@ -389,6 +401,10 @@ Returns a dict with the same structure as evaluate_program:
         }
     ]
 }
+
+For val runs, run_data is always blind and aggregate-only:
+- examples is always [].
+- per-example labels, predictions, and traces are not returned.
 
 Note: remaining_budget is NOT included because it was a snapshot from when that run happened and would be misleading now.
 
@@ -434,7 +450,7 @@ Returns a dict:
     "best_score": "float. Highest score achieved so far, 0-100 scale.",
     "best_run_id": "str or null. run_id of the evaluation that achieved best_score. Null if no runs yet.",
     "latest_run_id": "str or null. run_id of the most recent evaluation. Null if no runs yet.",
-    "baseline_run_id": "str or null. run_id of the initial baseline evaluation before any changes.",
+    "baseline_run_id": "str or null. run_id of the canonical baseline before any changes (val baseline when val exists, else train baseline).",
     "current_prompts": "dict[str, str]. Maps step_name to current prompt text for each step.",
     "best_prompts": "dict[str, str]. Maps step_name to prompt text from the best-scoring run.",
     "steps": "list[str]. Step names you can pass to update_prompt()."

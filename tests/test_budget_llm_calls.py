@@ -290,6 +290,60 @@ def test_rlm_session_baseline_summary_omits_run_id():
     kernel.close()
 
 
+def test_rlm_session_baseline_summary_prefers_val_when_available():
+    captured_inputs: dict[str, Any] = {}
+
+    def capture_factory(**_kwargs):
+        class Agent:
+            def __call__(self, **inputs):
+                captured_inputs.update(inputs)
+                return dspy.Prediction(
+                    optimized_dspy_program="",
+                    best_run_id="",
+                    trajectory=[],
+                    final_reasoning="",
+                )
+
+        return Agent()
+
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=build_trainset(2),
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=3,
+        max_output_chars=20_000,
+    )
+    baseline = kernel.run_baseline()
+    assert baseline["split"] == "val"
+    val_baseline_summary = kernel.run_data(str(baseline["run_id"]))["summary_line"]
+
+    train_run_id = next(
+        run_id
+        for run_id, meta in kernel.state.runs.items()
+        if meta.split == "train"
+    )
+    train_baseline_summary = kernel.run_data(train_run_id)["summary_line"]
+
+    session = RLMSession(
+        root_lm=DummyLM("root"),
+        sub_lm=None,
+        max_iterations=10,
+        max_llm_calls=10,
+        max_output_chars=20_000,
+        verbose=False,
+        rlm_factory=capture_factory,
+    )
+    _ = session.run(kernel, objective="baseline val summary test")
+
+    assert captured_inputs["unoptimized_baseline_summary"] == val_baseline_summary
+    assert captured_inputs["unoptimized_baseline_summary"] != train_baseline_summary
+
+    kernel.close()
+
+
 def test_rlm_session_threads_and_resets_root_stateful_session():
     kernel = OptimizationKernel(
         program=RuleProgram(),

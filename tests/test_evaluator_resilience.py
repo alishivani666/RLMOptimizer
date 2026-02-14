@@ -47,7 +47,7 @@ def test_evaluate_rows_continues_on_program_exceptions():
     assert len(payload["examples"]) == 2
     assert all(example["score"] == 0.0 for example in payload["examples"])
     assert all(example["passed"] is False for example in payload["examples"])
-    assert all(isinstance(example.get("error_text"), str) for example in payload["examples"])
+    assert all("error_text" not in example for example in payload["examples"])
 
 
 def test_evaluate_rows_reports_progress_events():
@@ -77,6 +77,7 @@ def test_evaluate_rows_reports_progress_events():
     assert events[4]["stage"] == "example_finished"
     assert events[-1]["completed"] == 2
     assert events[-1]["total"] == 2
+    assert all("error_text" not in event for event in events)
 
 
 def test_evaluate_rows_parallel_path_preserves_record_order():

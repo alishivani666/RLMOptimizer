@@ -40,7 +40,7 @@ class RLMDocstringOptimizer(Teleprompter):
         num_threads: int = 1,
         rlm_max_iterations: int = 200,
         rlm_max_llm_calls: int = 200,
-        rlm_max_output_chars: int = 2000,
+        rlm_max_output_chars: int = 10000,
         root_stateful_session: bool = True,
         verbose: bool = False,
         run_storage_dir: str | Path | None = None,

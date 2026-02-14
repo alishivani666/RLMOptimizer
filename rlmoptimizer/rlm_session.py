@@ -168,10 +168,10 @@ class PromptOptimizationSignature(dspy.Signature):
     """You are optimizing prompts in an LLM program. You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
 
     ## Goal
-    - Achieve 100% `best_score` or get as close as possible by optimizing the prompts before you run out of budget.
-    - The `best_score` is only updated when you run a ull evaluation on the validation subset of the dataset.
-    - Whenever you believe you achieve a new significantly improved score on the "train" subset of the dataset, validate those prompts by evaluating them on the validation subset of the dataset as well.
-    - Use `optimization_status()` to see your current `best_score`, current prompts and remaining budget.
+    - Achieve 100% `best_score` or get as close as possible. Keep optimizing until you run out of budget.
+    - `best_score` only updates from evaluation on the validation split. Run validation whenever you see a meaningful improvement on the train split.
+    - Maximize score on both splits. A large gap between them suggests overfitting.
+    - Use `optimization_status()` to check your current `best_score`, prompts, and remaining budget.
 
     ## Running experiments
     - Use `evaluate_program()` to test your changes. Key arguments for efficient experimentation:
