@@ -30,7 +30,7 @@ class DebugDisplay(Protocol):
         self,
         *,
         baseline_score: float,
-        best_score: float,
+        final_score: float,
         budget_used: int,
         total_budget: int,
         iterations: int,
@@ -148,7 +148,7 @@ class RichDebugDisplay:
         self,
         *,
         baseline_score: float,
-        best_score: float,
+        final_score: float,
         budget_used: int,
         total_budget: int,
         iterations: int,
@@ -156,7 +156,7 @@ class RichDebugDisplay:
         from rich import box
         from rich.table import Table
 
-        delta = best_score - baseline_score
+        delta = final_score - baseline_score
         delta_str = f"+{delta:.2f}" if delta >= 0 else f"{delta:.2f}"
         budget_pct = (
             f"{100 * budget_used / total_budget:.1f}%"
@@ -176,7 +176,7 @@ class RichDebugDisplay:
         table.add_row(
             "Train Score",
             f"[red]{baseline_score:.2f}%[/red]",
-            f"[green]{best_score:.2f}%[/green]",
+            f"[green]{final_score:.2f}%[/green]",
             f"[bold green]{delta_str}[/bold green]",
         )
         table.add_row(

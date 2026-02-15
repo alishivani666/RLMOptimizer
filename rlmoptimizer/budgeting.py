@@ -6,7 +6,7 @@ import dspy
 
 
 class BudgetMeteredLM(dspy.BaseLM):
-    """LM adapter that charges optimizer budget per LM request."""
+    """LM adapter that meters LM requests through the kernel budget policy."""
 
     def __init__(
         self,

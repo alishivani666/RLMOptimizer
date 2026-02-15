@@ -112,12 +112,10 @@ class _ProgressSession:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def run(self, kernel: OptimizationKernel, *, objective: str):
-        del objective
-        _ = kernel.optimization_status()
+    def run(self, kernel: OptimizationKernel):
+        status = kernel.optimization_status()
         return {
-            "optimized_dspy_program": "",
-            "best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": dict(status["current_prompts"]),
             "trajectory": [],
             "final_reasoning": "ok",
         }
@@ -136,7 +134,7 @@ def test_optimizer_uses_single_progress_path():
         trainset=build_trainset(3),
         metric=exact_metric,
     )
-    assert optimized.best_run_id is not None
+    assert optimized.latest_run_id is not None
 
 
 def test_rich_progress_reporter_renders_panel_and_closes():

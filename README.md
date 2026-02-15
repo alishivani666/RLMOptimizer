@@ -56,7 +56,7 @@ optimized = optimizer.compile(
 result = optimized(question="What is the capital of France?")
 
 # Inspect what happened during optimization
-print(optimized.best_score)
+print(optimized.optimized_dspy_program)
 print(optimized.trial_logs)
 print(optimized.agent_final_reasoning)
 ```
@@ -75,15 +75,15 @@ Set `OPENAI_API_KEY` (or the appropriate provider key) in your environment.
 
 When you call `compile()`:
 
-1. Your program is cloned and evaluated on the training set to establish a baseline. If a validation set is provided, it is also evaluated once at baseline and the canonical baseline (the one surfaced as `baseline_run_id` and passed to the RLM) is the val baseline.
+1. Your program is cloned and evaluated on the training set to establish a baseline. If a validation set is provided, it is also evaluated once at baseline.
 2. An RLM agent takes over. It has access to four tools:
    - **`evaluate_program`** — run the program on examples. Train evaluations return per-example predictions and per-step traces. Validation evaluations are blind and return aggregate-only metrics.
    - **`run_data`** — re-read any previous evaluation run (no budget cost). Validation runs stay blind/aggregate-only here as well.
    - **`update_prompt`** — rewrite the prompt text for any step.
-   - **`optimization_status`** — check remaining budget, current/best scores, and all step prompts.
+   - **`optimization_status`** — check remaining budget, recent run IDs, and current step prompts.
 3. The agent also has `llm_query` and `llm_query_batched` to send data to a sub-LLM for analysis — useful when evaluation payloads are large or when it needs semantic understanding of failures.
 4. The agent iterates: evaluating, analyzing, updating prompts, and re-evaluating until it's satisfied or budget runs out.
-5. The best-performing prompts are restored and the optimized program is returned.
+5. The agent submits a final `optimized_dspy_program` prompt map (`dict[str, str]`). That submitted map is applied as the returned optimized program.
 
 ### Blind validation
 
@@ -101,7 +101,7 @@ Optimization has a finite budget measured in units:
 budget = max_iterations * len(trainset)
 ```
 
-Every example evaluated and every LM call the agent makes costs budget. This includes baseline evaluations (train, and val baseline when `valset` is provided). When budget hits zero, optimization stops and the best result so far is returned. The agent is told about its budget and can use targeted train evaluations (`limit`, `failed_from_run`, specific `ids`) to spend it wisely.
+Every evaluated example costs budget. Sub-LM helper calls also cost budget. Root-LM turns are budget-exempt, so the optimizer can continue reasoning/submitting even when evaluation budget is low. The agent is told about its budget and can use targeted train evaluations (`limit`, `failed_from_run`, specific `ids`) to spend it wisely.
 
 ## Parameters
 
@@ -126,9 +126,8 @@ Stateful root sessions require `root_lm` in Responses mode (`model_type="respons
 The returned program has extra attributes:
 
 ```python
-optimized.best_score              # highest score achieved
-optimized.best_run_id             # run ID of the best evaluation
-optimized.baseline_run_id         # run ID of the canonical baseline (val if provided, else train)
+optimized.optimized_dspy_program  # final submitted prompt map {step_name: prompt_text}
+optimized.latest_run_id           # most recent evaluation run id seen during optimization
 optimized.trial_logs              # list of all evaluation runs with scores and configs
 optimized.agent_trajectory        # full trajectory of agent actions
 optimized.agent_final_reasoning   # the agent's final reasoning

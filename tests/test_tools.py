@@ -48,8 +48,8 @@ def test_evaluate_and_run_data_round_trip(tmp_path: Path):
     assert "Run:" not in loaded["summary_line"]
 
     status = kernel.optimization_status()
-    assert status["baseline_run_id"] == run_id
     assert status["remaining_budget"] == 12
+    assert status["latest_run_id"] == run_id
 
     kernel.close()
 
@@ -121,7 +121,7 @@ def test_tools_normalize_inputs_and_return_errors(tmp_path: Path):
     status = tools.optimization_status()
     assert "steps" in status
     assert "current_prompts" in status
-    assert "best_prompts" in status
+    assert "latest_run_id" in status
 
     bad_run = tools.run_data("does-not-exist")
     assert isinstance(bad_run, dict)
@@ -202,32 +202,6 @@ def test_tools_payloads_are_sanitized_for_none_values(tmp_path: Path):
     assert _contains_none(payload) is False
     assert _contains_none(loaded) is False
     assert _contains_none(status) is False
-
-    kernel.close()
-
-
-def test_tools_payloads_are_sanitized_for_non_finite_floats(tmp_path: Path):
-    kernel = OptimizationKernel(
-        program=RuleProgram(),
-        trainset=build_trainset(3),
-        valset=None,
-        metric=exact_metric,
-        eval_lm=None,
-        num_threads=1,
-        max_iterations=3,
-        max_output_chars=10_000,
-        run_storage_dir=tmp_path / "runs",
-    )
-    tools = OptimizationTools(kernel)
-
-    kernel.state.best_score = float("-inf")
-    assert tools.optimization_status()["best_score"] == "-inf"
-
-    kernel.state.best_score = float("inf")
-    assert tools.optimization_status()["best_score"] == "inf"
-
-    kernel.state.best_score = float("nan")
-    assert tools.optimization_status()["best_score"] == "nan"
 
     kernel.close()
 

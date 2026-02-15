@@ -34,8 +34,7 @@ def _session_factory(**kwargs):
             if sub_lm is not None:
                 sub_lm("sub")
             return dspy.Prediction(
-                optimized_dspy_program="",
-                best_run_id="",
+                optimized_dspy_program={"step": "Return the answer exactly."},
                 trajectory=[],
                 final_reasoning="done",
             )
@@ -160,7 +159,7 @@ def test_rlm_session_event_callback_emits_session_and_lm_events():
         rlm_factory=_session_factory,
         event_callback=lambda event: events.append(dict(event)),
     )
-    _ = session.run(kernel, objective="event callback test")
+    _ = session.run(kernel)
 
     assert any(
         event.get("source") == "session" and event.get("event") == "session_started"
@@ -188,7 +187,7 @@ def test_kernel_budget_callback_reentry_does_not_deadlock():
         if callback_state["reentered"]:
             return
         callback_state["reentered"] = True
-        holder["kernel"].charge_llm_requests(source="root", requests=1)
+        holder["kernel"].charge_llm_requests(source="sub", requests=1)
 
     kernel = OptimizationKernel(
         program=RuleProgram(),
@@ -206,7 +205,7 @@ def test_kernel_budget_callback_reentry_does_not_deadlock():
     done = {"value": False}
 
     def _charge_once() -> None:
-        kernel.charge_llm_requests(source="root", requests=1)
+        kernel.charge_llm_requests(source="sub", requests=1)
         done["value"] = True
 
     worker = threading.Thread(target=_charge_once, daemon=True)
@@ -217,5 +216,5 @@ def test_kernel_budget_callback_reentry_does_not_deadlock():
     assert done["value"] is True
     assert callback_state["reentered"] is True
     assert kernel.state.remaining_budget == kernel.max_budget - 2
-    assert kernel.state.root_lm_calls == 2
+    assert kernel.state.sub_lm_calls == 2
     kernel.close()

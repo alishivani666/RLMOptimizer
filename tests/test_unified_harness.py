@@ -23,12 +23,10 @@ class _NoopSession:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def run(self, kernel, *, objective: str):
-        del objective
-        _ = kernel.optimization_status()
+    def run(self, kernel):
+        status = kernel.optimization_status()
         return {
-            "optimized_dspy_program": "",
-            "best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": dict(status["current_prompts"]),
             "trajectory": [],
             "final_reasoning": "noop",
         }
@@ -105,6 +103,8 @@ def test_harness_isolates_failures_and_keeps_other_results(tmp_path: Path):
     assert run_summary["benchmarks"]["good"]["status"] == "ok"
     assert run_summary["benchmarks"]["bad"]["status"] == "error"
     assert "synthetic loader failure" in run_summary["benchmarks"]["bad"]["error"]
+    assert "analytics" in run_summary["benchmarks"]["good"]
+    assert "analytics" in run_summary["benchmarks"]["bad"]
 
     good_dir = output_dir / "mixed" / "good"
     bad_dir = output_dir / "mixed" / "bad"
@@ -129,6 +129,19 @@ def test_progress_math_uses_correct_expected_total_and_excludes_baseline(tmp_pat
     assert summary["status"] == "ok"
     assert summary["expected_progress_total"] == 22  # 3 + (2*4+2) + (4+2+3)
     assert summary["optimizer_budget_units"] == 10
+    assert summary["analytics"]["budget_remaining"] == 10
+    assert summary["analytics"]["total_iterations"] == 0
+    assert summary["analytics"]["optimizer_evaluation_runs"] == 2
+    assert summary["analytics"]["external_evaluation_runs"] == 4
+    assert summary["analytics"]["total_evaluation_runs"] == 6
+    assert summary["analytics"]["sub_lm_uses"] == 0
+    assert summary["analytics"]["python_error_count"] == 0
+    assert summary["analytics"]["python_error_types"] == {}
+    assert summary["analytics"]["avg_char_lengths"] == {
+        "reasoning": 0.0,
+        "code": 0.0,
+        "output": 0.0,
+    }
 
     progress_total = sum(
         int(message.get("delta") or 0)

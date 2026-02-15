@@ -35,10 +35,6 @@ class OptimizationKernelState:
     evaluated_examples: int = 0
     root_lm_calls: int = 0
     sub_lm_calls: int = 0
-    baseline_run_id: str | None = None
     latest_run_id: str | None = None
-    best_run_id: str | None = None
-    best_score: float = float("-inf")
     current_prompt_map: dict[str, str] = field(default_factory=dict)
-    best_prompt_map: dict[str, str] = field(default_factory=dict)
     runs: dict[str, RunMeta] = field(default_factory=dict)

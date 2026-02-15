@@ -125,8 +125,7 @@ def _budgeting_factory(**kwargs):
             if sub_lm is not None:
                 sub_lm("sub-1")
             return dspy.Prediction(
-                optimized_dspy_program="",
-                best_run_id="",
+                optimized_dspy_program={"step": "Return the answer exactly."},
                 trajectory=[],
                 final_reasoning="",
             )
@@ -146,8 +145,7 @@ def _stateful_budgeting_factory(**kwargs):
                 sub_lm("sub-1")
                 sub_lm("sub-2")
             return dspy.Prediction(
-                optimized_dspy_program="",
-                best_run_id="",
+                optimized_dspy_program={"step": "Return the answer exactly."},
                 trajectory=[],
                 final_reasoning="",
             )
@@ -155,7 +153,28 @@ def _stateful_budgeting_factory(**kwargs):
     return Agent()
 
 
-def test_kernel_charges_root_and_sub_lm_calls():
+def _sub_overflow_factory(**kwargs):
+    sub_lm = kwargs.get("sub_lm")
+
+    class Agent:
+        def __call__(self, **_inputs):
+            root_lm = dspy.settings.get("lm")
+            root_lm("root-1")
+            root_lm("root-2")
+            if sub_lm is not None:
+                sub_lm("sub-1")
+                sub_lm("sub-2")
+                sub_lm("sub-3")
+            return dspy.Prediction(
+                optimized_dspy_program={"step": "Return the answer exactly."},
+                trajectory=[],
+                final_reasoning="",
+            )
+
+    return Agent()
+
+
+def test_kernel_tracks_root_calls_but_charges_only_sub_lm_calls():
     kernel = OptimizationKernel(
         program=RuleProgram(),
         trainset=build_trainset(4),
@@ -177,23 +196,22 @@ def test_kernel_charges_root_and_sub_lm_calls():
         verbose=False,
         rlm_factory=_budgeting_factory,
     )
-    result = session.run(kernel, objective="budget test")
+    result = session.run(kernel)
 
-    assert result["best_run_id"] == kernel.state.best_run_id
-    assert "[step]" in result["optimized_dspy_program"]
+    assert result["optimized_dspy_program"] == {"step": "Return the answer exactly."}
     assert kernel.state.evaluated_examples == 0
     assert kernel.state.root_lm_calls == 2
     assert kernel.state.sub_lm_calls == 1
-    assert kernel.state.remaining_budget == 5
+    assert kernel.state.remaining_budget == 7
     status = kernel.optimization_status()
     assert status["evaluated_examples"] == 0
-    assert status["root_lm_calls"] == 2
     assert status["sub_lm_calls"] == 1
+    assert "root_lm_calls" not in status
 
     kernel.close()
 
 
-def test_kernel_budget_exceeded_by_lm_calls():
+def test_kernel_budget_exceeded_by_sub_lm_calls():
     kernel = OptimizationKernel(
         program=RuleProgram(),
         trainset=build_trainset(2),
@@ -213,11 +231,11 @@ def test_kernel_budget_exceeded_by_lm_calls():
         max_llm_calls=10,
         max_output_chars=20_000,
         verbose=False,
-        rlm_factory=_budgeting_factory,
+        rlm_factory=_sub_overflow_factory,
     )
 
     try:
-        session.run(kernel, objective="budget overflow")
+        session.run(kernel)
         assert False, "expected BudgetExceededError"
     except BudgetExceededError:
         pass
@@ -238,7 +256,7 @@ def test_budget_metered_lm_is_dspy_baselm_compatible():
     assert lm is wrapped
 
 
-def test_rlm_session_baseline_summary_omits_run_id():
+def test_rlm_session_baseline_summary_lists_baseline_inventory():
     captured_inputs: dict[str, Any] = {}
 
     def capture_factory(**_kwargs):
@@ -246,8 +264,7 @@ def test_rlm_session_baseline_summary_omits_run_id():
             def __call__(self, **inputs):
                 captured_inputs.update(inputs)
                 return dspy.Prediction(
-                    optimized_dspy_program="",
-                    best_run_id="",
+                    optimized_dspy_program={"step": "Return the answer exactly."},
                     trajectory=[],
                     final_reasoning="",
                 )
@@ -266,7 +283,6 @@ def test_rlm_session_baseline_summary_omits_run_id():
     )
     baseline = kernel.run_baseline()
     baseline_run_id = str(baseline["run_id"])
-    baseline_summary = kernel.run_data(baseline_run_id)["summary_line"]
 
     session = RLMSession(
         root_lm=DummyLM("root"),
@@ -277,10 +293,16 @@ def test_rlm_session_baseline_summary_omits_run_id():
         verbose=False,
         rlm_factory=capture_factory,
     )
-    _ = session.run(kernel, objective="baseline summary test")
+    _ = session.run(kernel)
 
-    assert captured_inputs["unoptimized_baseline_summary"] == baseline_summary
-    assert baseline_run_id not in captured_inputs["unoptimized_baseline_summary"]
+    summary = str(captured_inputs["unoptimized_baseline_summary"])
+    assert "You already have two baseline evaluation runs saved:" in summary
+    assert "1) Baseline train run" in summary
+    assert f"- run_id: {baseline_run_id}" in summary
+    assert "- diagnostics: per-example data available via run_data(run_id)" in summary
+    assert "2) Baseline validation run" in summary
+    assert "- diagnostics: aggregate-only (examples are hidden)" in summary
+    assert f"Current latest_run_id: {baseline_run_id}" in summary
     assert "Budget remaining" not in captured_inputs["unoptimized_baseline_summary"]
     assert captured_inputs["total_budget_remaining"] == kernel.state.remaining_budget
     assert "[step]" in captured_inputs["unoptimized_dspy_program"]
@@ -290,7 +312,7 @@ def test_rlm_session_baseline_summary_omits_run_id():
     kernel.close()
 
 
-def test_rlm_session_baseline_summary_prefers_val_when_available():
+def test_rlm_session_baseline_summary_includes_train_and_val_runs():
     captured_inputs: dict[str, Any] = {}
 
     def capture_factory(**_kwargs):
@@ -298,8 +320,7 @@ def test_rlm_session_baseline_summary_prefers_val_when_available():
             def __call__(self, **inputs):
                 captured_inputs.update(inputs)
                 return dspy.Prediction(
-                    optimized_dspy_program="",
-                    best_run_id="",
+                    optimized_dspy_program={"step": "Return the answer exactly."},
                     trajectory=[],
                     final_reasoning="",
                 )
@@ -318,14 +339,13 @@ def test_rlm_session_baseline_summary_prefers_val_when_available():
     )
     baseline = kernel.run_baseline()
     assert baseline["split"] == "val"
-    val_baseline_summary = kernel.run_data(str(baseline["run_id"]))["summary_line"]
+    val_run_id = str(baseline["run_id"])
 
     train_run_id = next(
         run_id
         for run_id, meta in kernel.state.runs.items()
         if meta.split == "train"
     )
-    train_baseline_summary = kernel.run_data(train_run_id)["summary_line"]
 
     session = RLMSession(
         root_lm=DummyLM("root"),
@@ -336,10 +356,14 @@ def test_rlm_session_baseline_summary_prefers_val_when_available():
         verbose=False,
         rlm_factory=capture_factory,
     )
-    _ = session.run(kernel, objective="baseline val summary test")
+    _ = session.run(kernel)
 
-    assert captured_inputs["unoptimized_baseline_summary"] == val_baseline_summary
-    assert captured_inputs["unoptimized_baseline_summary"] != train_baseline_summary
+    summary = str(captured_inputs["unoptimized_baseline_summary"])
+    assert "You already have two baseline evaluation runs saved:" in summary
+    assert f"- run_id: {train_run_id}" in summary
+    assert f"- run_id: {val_run_id}" in summary
+    assert f"Current latest_run_id: {train_run_id}" in summary
+    assert "Budget remaining" not in summary
 
     kernel.close()
 
@@ -368,8 +392,8 @@ def test_rlm_session_threads_and_resets_root_stateful_session():
         rlm_factory=_stateful_budgeting_factory,
         root_stateful_session=True,
     )
-    _ = session.run(kernel, objective="stateful run 1")
-    _ = session.run(kernel, objective="stateful run 2")
+    _ = session.run(kernel)
+    _ = session.run(kernel)
 
     assert len(root_lm.forward_kwargs) == 4
     assert root_lm.forward_kwargs[0].get("previous_response_id") is None
@@ -406,7 +430,7 @@ def test_rlm_session_stateful_root_can_be_disabled():
         rlm_factory=_stateful_budgeting_factory,
         root_stateful_session=False,
     )
-    _ = session.run(kernel, objective="stateful disabled")
+    _ = session.run(kernel)
 
     assert len(root_lm.call_kwargs) == 2
     assert root_lm.call_kwargs[0].get("previous_response_id") is None
@@ -441,7 +465,7 @@ def test_rlm_session_incompatible_root_lm_falls_back_to_stateless():
         rlm_factory=_stateful_budgeting_factory,
         root_stateful_session=True,
     )
-    _ = session.run(kernel, objective="stateful incompatible")
+    _ = session.run(kernel)
 
     assert len(root_lm.call_kwargs) == 2
     assert root_lm.call_kwargs[0].get("previous_response_id") is None
@@ -477,7 +501,7 @@ def test_rlm_session_stateful_root_does_not_change_sub_lm_behavior():
         rlm_factory=_stateful_budgeting_factory,
         root_stateful_session=True,
     )
-    _ = session.run(kernel, objective="root-only stateful")
+    _ = session.run(kernel)
 
     assert len(root_lm.forward_kwargs) == 2
     assert root_lm.forward_kwargs[1].get("previous_response_id") == "resp_1"

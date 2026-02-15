@@ -338,23 +338,16 @@ class OptimizationTools:
     def optimization_status(self) -> dict[str, Any]:
         """Return current optimization state.
 
-        Includes budget remaining, current/best run IDs, best score so far, and
-        both current and best prompt maps. Use this before/after edits to decide
-        whether to keep exploring, revert, or finish.
+        Includes budget remaining, latest run ID, current prompts, and step names.
+        Use this before/after edits to decide whether to keep exploring or finish.
         """
         status = self._kernel.optimization_status()
         return {
             "remaining_budget": status["remaining_budget"],
             "evaluated_examples": status["evaluated_examples"],
-            "root_lm_calls": status["root_lm_calls"],
             "sub_lm_calls": status["sub_lm_calls"],
-            "num_threads": status["num_threads"],
-            "best_score": status["best_score"],
-            "best_run_id": status["best_run_id"],
             "latest_run_id": status["latest_run_id"],
-            "baseline_run_id": status["baseline_run_id"],
             "current_prompts": dict(status["current_prompts"]),
-            "best_prompts": dict(status["best_prompts"]),
             "steps": list(status["steps"]),
         }
 
@@ -493,20 +486,13 @@ Returns a dict:
 {
     "remaining_budget": "int. How many budget units you have left.",
     "evaluated_examples": "int. Total instances evaluated across all runs so far.",
-    "root_lm_calls": "int. How many LLM calls the optimizer (you) has made.",
     "sub_lm_calls": "int. How many LLM calls made via llm_query/llm_query_batched.",
-    "num_threads": "int. Number of parallel threads used for evaluation.",
-    "best_score": "float. Highest score achieved so far, 0-100 scale.",
-    "best_run_id": "str or null. run_id of the evaluation that achieved best_score. Null if no runs yet.",
     "latest_run_id": "str or null. run_id of the most recent evaluation. Null if no runs yet.",
-    "baseline_run_id": "str or null. run_id of the canonical baseline before any changes (val baseline when val exists, else train baseline).",
     "current_prompts": "dict[str, str]. Maps step_name to current prompt text for each step.",
-    "best_prompts": "dict[str, str]. Maps step_name to prompt text from the best-scoring run.",
     "steps": "list[str]. Step names you can pass to update_prompt()."
 }
 
 Use current_prompts to see what prompts are currently active.
-Use best_prompts to see what prompts achieved the best score.
 Use steps to know what values you can pass to update_prompt().""",
             ),
         ]

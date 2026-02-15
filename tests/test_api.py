@@ -15,15 +15,13 @@ class FakeSession:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def run(self, kernel, *, objective: str):
-        del objective
+    def run(self, kernel):
         kernel.optimization_status()
         kernel.evaluate_program(split="train", limit=1)
         kernel.update_prompt("step", "Copy question exactly.")
         kernel.evaluate_program(split="train")
         return {
-            "optimized_dspy_program": "optimized",
-            "best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": {"step": "Copy question exactly."},
             "trajectory": [],
             "final_reasoning": "reasoning",
         }
@@ -33,13 +31,11 @@ class ThreadCheckSession:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def run(self, kernel, *, objective: str):
-        del objective
+    def run(self, kernel):
         status = kernel.optimization_status()
-        assert status["num_threads"] == 3
+        assert "current_prompts" in status
         return {
-            "optimized_dspy_program": "",
-            "best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": dict(status["current_prompts"]),
             "trajectory": [],
             "final_reasoning": "thread-check",
         }
@@ -49,12 +45,10 @@ class FinalReasoningOnlySession:
     def __init__(self, **_kwargs) -> None:
         pass
 
-    def run(self, kernel, *, objective: str):
-        del objective
+    def run(self, kernel):
         kernel.optimization_status()
         return {
-            "optimized_dspy_program": "",
-            "best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": {"step": "Return the answer exactly."},
             "trajectory": [],
             "final_reasoning": "reasoning-only summary",
         }
@@ -64,13 +58,11 @@ class StatefulFlagSession:
     def __init__(self, *, root_stateful_session: bool, **_kwargs) -> None:
         self._root_stateful_session = root_stateful_session
 
-    def run(self, kernel, *, objective: str):
-        del objective
+    def run(self, kernel):
         assert self._root_stateful_session is False
         kernel.optimization_status()
         return {
-            "optimized_dspy_program": "",
-            "best_run_id": kernel.state.best_run_id,
+            "optimized_dspy_program": {"step": "Return the answer exactly."},
             "trajectory": [],
             "final_reasoning": "stateful-flag-check",
         }
@@ -90,7 +82,7 @@ def test_optimizer_is_teleprompter_compatible():
     assert "valset" in compile_sig.parameters
 
 
-def test_compile_returns_best_checkpoint_program():
+def test_compile_returns_program_with_submitted_prompt_map():
     optimizer = RLMDocstringOptimizer(
         max_iterations=3,
         root_lm=dspy.LM("openai/mock-root"),
@@ -106,11 +98,11 @@ def test_compile_returns_best_checkpoint_program():
     )
 
     assert isinstance(optimized, dspy.Module)
-    assert optimized.best_score == 100.0
-    assert optimized.baseline_run_id is not None
-    assert optimized.best_run_id is not None
+    assert optimized.optimized_dspy_program == {"step": "Copy question exactly."}
+    assert optimized.latest_run_id is not None
     assert len(optimized.trial_logs) == 3
     assert optimized.agent_final_reasoning == "reasoning"
+    assert optimized.agent_optimized_dspy_program == {"step": "Copy question exactly."}
     assert optimized(question="hello").answer == "hello"
 
 

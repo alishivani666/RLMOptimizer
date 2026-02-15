@@ -7,7 +7,7 @@ from rlmoptimizer.kernel import OptimizationKernel
 from ._helpers import RuleProgram, build_trainset, exact_metric
 
 
-def test_best_tracking_prefers_full_val_runs_when_valset_exists(tmp_path: Path):
+def test_run_baseline_keeps_latest_run_on_train_when_valset_exists(tmp_path: Path):
     kernel = OptimizationKernel(
         program=RuleProgram(),
         trainset=build_trainset(4),
@@ -22,28 +22,15 @@ def test_best_tracking_prefers_full_val_runs_when_valset_exists(tmp_path: Path):
 
     baseline = kernel.run_baseline()
     assert baseline["split"] == "val"
-    assert kernel.state.baseline_run_id == baseline["run_id"]
-    assert kernel.state.best_run_id is not None
-    assert kernel.state.best_score == 0.0
-    assert kernel.state.runs[kernel.state.best_run_id].split == "val"
-
-    kernel.update_prompt("step", "Copy question exactly.")
-
-    full_train = kernel.evaluate_program(split="train")
-    assert full_train["score"] == 100.0
-    assert kernel.state.runs[kernel.state.best_run_id].split == "val"
-
-    full_val = kernel.evaluate_program(split="val")
-    assert full_val["score"] == 100.0
-    assert full_val["evaluated_count"] == 2
-    assert full_val["examples"] == []
-    assert kernel.state.best_run_id == full_val["run_id"]
-    assert kernel.state.best_score == 100.0
+    assert kernel.baseline_train_run_id is not None
+    assert kernel.baseline_val_run_id == baseline["run_id"]
+    assert kernel.state.latest_run_id == kernel.baseline_train_run_id
+    assert baseline["examples"] == []
 
     kernel.close()
 
 
-def test_best_tracking_uses_full_train_when_no_valset(tmp_path: Path):
+def test_apply_submitted_prompt_map_ignores_unknown_steps(tmp_path: Path):
     kernel = OptimizationKernel(
         program=RuleProgram(),
         trainset=build_trainset(4),
@@ -56,21 +43,51 @@ def test_best_tracking_uses_full_train_when_no_valset(tmp_path: Path):
         run_storage_dir=tmp_path / "runs",
     )
 
-    baseline = kernel.run_baseline()
-    assert baseline["split"] == "train"
-    assert kernel.state.best_run_id == baseline["run_id"]
-    assert kernel.state.best_score == 0.0
+    before = dict(kernel.state.current_prompt_map)
+    updated = kernel.apply_submitted_prompt_map({"unknown": "x"})
+    assert updated == before
+    assert kernel.state.current_prompt_map == before
 
-    kernel.update_prompt("step", "Copy question exactly.")
+    kernel.close()
 
-    train_subset = kernel.evaluate_program(split="train", limit=1)
-    assert train_subset["score"] == 100.0
-    assert kernel.state.best_run_id == baseline["run_id"]
-    assert kernel.state.best_score == 0.0
 
-    full_train = kernel.evaluate_program(split="train", limit=4)
-    assert full_train["score"] == 100.0
-    assert kernel.state.best_run_id == full_train["run_id"]
-    assert kernel.state.best_score == 100.0
+def test_apply_submitted_prompt_map_rejects_non_dict(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=5,
+        max_output_chars=20_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+
+    try:
+        kernel.apply_submitted_prompt_map("bad")  # type: ignore[arg-type]
+        assert False, "expected TypeError for non-dict submission"
+    except TypeError:
+        pass
+
+    kernel.close()
+
+
+def test_apply_submitted_prompt_map_updates_current_prompt_map(tmp_path: Path):
+    kernel = OptimizationKernel(
+        program=RuleProgram(),
+        trainset=build_trainset(4),
+        valset=None,
+        metric=exact_metric,
+        eval_lm=None,
+        num_threads=1,
+        max_iterations=5,
+        max_output_chars=20_000,
+        run_storage_dir=tmp_path / "runs",
+    )
+
+    updated = kernel.apply_submitted_prompt_map({"step": "Copy question exactly."})
+    assert updated == {"step": "Copy question exactly."}
+    assert kernel.state.current_prompt_map == {"step": "Copy question exactly."}
 
     kernel.close()

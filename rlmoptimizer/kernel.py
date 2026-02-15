@@ -77,8 +77,9 @@ class OptimizationKernel:
         self.state = OptimizationKernelState(
             remaining_budget=self.max_budget,
             current_prompt_map=dict(initial_prompt_map),
-            best_prompt_map=dict(initial_prompt_map),
         )
+        self.baseline_train_run_id: str | None = None
+        self.baseline_val_run_id: str | None = None
         self._baseline_structure_hash = structure_hash(self.program)
         self._debug_display = debug_display
 
@@ -90,26 +91,6 @@ class OptimizationKernel:
             callback({"source": "kernel", "event": event_type, **payload})
         except Exception:
             pass
-
-    def _best_tracking_split(self) -> str:
-        """Track best runs on full val when available, else full train."""
-        return "val" if self.dataset_rows["val"] else "train"
-
-    def _is_eligible_best_run(
-        self,
-        *,
-        split: str,
-        selected_rows: list[DatasetRow],
-        selected_ids: list[str] | None,
-        failed_from_run: str | None,
-    ) -> bool:
-        if split != self._best_tracking_split():
-            return False
-        if failed_from_run is not None:
-            return False
-        if selected_ids:
-            return False
-        return len(selected_rows) == len(self.dataset_rows[split])
 
     def close(self) -> None:
         if self._storage_tempdir is not None:
@@ -132,9 +113,7 @@ class OptimizationKernel:
         baseline_payload = train_payload
         val_payload: dict[str, Any] | None = None
 
-        # When val exists, initialize best-tracking on the same split used for
-        # best-run selection so comparisons stay val-to-val.
-        if self._best_tracking_split() == "val":
+        if self.dataset_rows["val"]:
             val_payload = self._evaluate_program_raw(
                 split="val",
                 charge_budget=False,
@@ -142,18 +121,25 @@ class OptimizationKernel:
             )
             baseline_payload = val_payload
 
-        self.state.baseline_run_id = str(baseline_payload["run_id"])
+        train_run_id = str(train_payload.get("run_id", "")).strip() or None
+        val_run_id = (
+            str(val_payload.get("run_id", "")).strip() or None
+            if val_payload is not None
+            else None
+        )
+        self.baseline_train_run_id = train_run_id
+        self.baseline_val_run_id = val_run_id
+        if train_run_id is not None:
+            # Keep latest_run_id pointing at baseline train so the agent can
+            # immediately inspect rich diagnostics without spending budget.
+            self.state.latest_run_id = train_run_id
+
         self._emit_event(
             "baseline_completed",
             {
-                "baseline_run_id": self.state.baseline_run_id,
                 "baseline_split": baseline_payload.get("split"),
-                "train_run_id": str(train_payload.get("run_id", "")),
-                "val_run_id": (
-                    str(val_payload.get("run_id", ""))
-                    if val_payload is not None
-                    else None
-                ),
+                "train_run_id": train_run_id or "",
+                "val_run_id": val_run_id,
             },
         )
         return self._public_payload_view(baseline_payload)
@@ -301,10 +287,25 @@ class OptimizationKernel:
         return remaining_budget
 
     def charge_llm_requests(self, *, source: str, requests: int = 1) -> int:
-        remaining = self._charge_budget(units=requests, reason=f"{source} LM requests")
+        if requests <= 0:
+            return self.state.remaining_budget
+
+        # Root optimizer turns are intentionally budget-exempt so the agent can
+        # still reason/submit when evaluation budget reaches zero.
         if source == "root":
             self.state.root_lm_calls += requests
-        elif source == "sub":
+            self._emit_event(
+                "budget_charge_skipped",
+                {
+                    "units": requests,
+                    "reason": "root LM requests are budget-exempt",
+                    "remaining_budget": self.state.remaining_budget,
+                },
+            )
+            return self.state.remaining_budget
+
+        remaining = self._charge_budget(units=requests, reason=f"{source} LM requests")
+        if source == "sub":
             self.state.sub_lm_calls += requests
         return remaining
 
@@ -421,17 +422,6 @@ class OptimizationKernel:
         )
 
         self.state.latest_run_id = run_id
-        if self._is_eligible_best_run(
-            split=split,
-            selected_rows=selected_rows,
-            selected_ids=selected_ids,
-            failed_from_run=failed_from_run,
-        ):
-            score = float(payload["score"])
-            if self.state.best_run_id is None or score > self.state.best_score:
-                self.state.best_score = score
-                self.state.best_run_id = run_id
-                self.state.best_prompt_map = dict(self.state.current_prompt_map)
 
         if self._debug_display is None:
             print(summary)
@@ -613,22 +603,26 @@ class OptimizationKernel:
         status = {
             "remaining_budget": self.state.remaining_budget,
             "evaluated_examples": self.state.evaluated_examples,
-            "root_lm_calls": self.state.root_lm_calls,
             "sub_lm_calls": self.state.sub_lm_calls,
-            "num_threads": self.num_threads,
-            "best_score": self.state.best_score,
-            "best_run_id": self.state.best_run_id,
             "latest_run_id": self.state.latest_run_id,
-            "baseline_run_id": self.state.baseline_run_id,
             "current_prompts": dict(self.state.current_prompt_map),
-            "best_prompts": dict(self.state.best_prompt_map),
             "steps": sorted(self.state.current_prompt_map.keys()),
         }
         return status
 
-    def restore_best_prompts(self) -> None:
-        apply_prompt_map(self.program, self.state.best_prompt_map)
+    def apply_submitted_prompt_map(self, submission: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(submission, dict):
+            raise TypeError("optimized_dspy_program must be a dict[str, str].")
+
+        apply_prompt_map(self.program, submission)
         self.state.current_prompt_map = prompt_map(self.program)
+        self._emit_event(
+            "submission_applied",
+            {
+                "steps": sorted(self.state.current_prompt_map.keys()),
+            },
+        )
+        return dict(self.state.current_prompt_map)
 
     def trial_logs(self) -> list[dict[str, Any]]:
         logs: list[dict[str, Any]] = []

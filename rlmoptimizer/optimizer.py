@@ -12,7 +12,7 @@ from .debugger import create_debug_display
 from .fingerprint import prompt_map
 from .kernel import OptimizationKernel
 from .rlm_session import RLMSession
-from .types import BudgetExceededError
+from .types import BudgetExceededError, PromptUpdateError
 
 
 def _accepts_param(func: Any, name: str) -> bool:
@@ -107,10 +107,6 @@ class RLMDocstringOptimizer(Teleprompter):
             return student.deepcopy()
         return copy.deepcopy(student)
 
-    def _objective_text(self, train_size: int, val_size: int) -> str:
-        val_part = f"Val set: {val_size} instances. " if val_size else ""
-        return f"Train set: {train_size} instances. {val_part}When finished, call SUBMIT(optimized_dspy_program=..., best_run_id=...)."
-
     def compile(
         self,
         student: dspy.Module,
@@ -184,46 +180,41 @@ class RLMDocstringOptimizer(Teleprompter):
 
             session_result: dict[str, Any] = {}
             try:
-                run_kwargs: dict[str, Any] = {}
-                if _accepts_param(session.run, "objective"):
-                    run_kwargs["objective"] = self._objective_text(
-                        train_size=len(trainset),
-                        val_size=len(valset) if valset is not None else 0,
-                    )
-                session_result = session.run(kernel, **run_kwargs)
+                session_result = session.run(kernel)
             except BudgetExceededError:
                 # Budget exhaustion is a normal hard-stop path.
                 session_result = {
-                    "optimized_dspy_program": "",
-                    "best_run_id": kernel.state.best_run_id or "",
+                    "optimized_dspy_program": dict(kernel.state.current_prompt_map),
                     "trajectory": [],
                     "final_reasoning": "Stopped due to budget exhaustion.",
                 }
 
-            kernel.restore_best_prompts()
+            submitted_prompt_map = session_result.get("optimized_dspy_program")
+            if not isinstance(submitted_prompt_map, dict):
+                raise PromptUpdateError(
+                    "session result must include optimized_dspy_program as dict[str, str]."
+                )
+            applied_prompt_map = kernel.apply_submitted_prompt_map(submitted_prompt_map)
 
             if debug_display is not None:
+                latest_score = float(baseline_payload.get("score", 0.0))
+                latest_run_id = kernel.state.latest_run_id
+                if latest_run_id is not None:
+                    latest_meta = kernel.state.runs.get(latest_run_id)
+                    if latest_meta is not None:
+                        latest_score = float(latest_meta.score)
                 debug_display.show_final_summary(
                     baseline_score=float(baseline_payload.get("score", 0)),
-                    best_score=kernel.state.best_score,
+                    final_score=latest_score,
                     budget_used=kernel.max_budget - kernel.state.remaining_budget,
                     total_budget=kernel.max_budget,
                     iterations=len(kernel.state.runs),
                 )
 
             program.trial_logs = kernel.trial_logs()
-            program.best_score = kernel.state.best_score
-            program.best_run_id = kernel.state.best_run_id
-            program.baseline_run_id = kernel.state.baseline_run_id
-            program.agent_optimized_dspy_program = session_result.get(
-                "optimized_dspy_program", ""
-            )
-            agent_best_run_id = str(
-                session_result.get("best_run_id")
-                or kernel.state.best_run_id
-                or ""
-            )
-            program.agent_best_run_id = agent_best_run_id
+            program.optimized_dspy_program = dict(applied_prompt_map)
+            program.latest_run_id = kernel.state.latest_run_id
+            program.agent_optimized_dspy_program = dict(applied_prompt_map)
             program.agent_trajectory = session_result.get("trajectory", [])
             program.agent_final_reasoning = str(
                 session_result.get("final_reasoning") or ""

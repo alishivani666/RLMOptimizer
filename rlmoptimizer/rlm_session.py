@@ -201,15 +201,56 @@ def _render_program_text(
     return "\n\n".join(sections)
 
 
+def _build_unoptimized_baseline_summary(kernel: OptimizationKernel) -> str:
+    train_run_id = str(getattr(kernel, "baseline_train_run_id", "") or "").strip()
+    if not train_run_id:
+        raise RuntimeError("baseline_train_run_id is unavailable; call run_baseline() first.")
+
+    val_run_id = str(getattr(kernel, "baseline_val_run_id", "") or "").strip()
+    latest_run_id = str(kernel.state.latest_run_id or "").strip()
+
+    train_payload = kernel.run_data(train_run_id)
+    if not isinstance(train_payload, dict):
+        raise RuntimeError("train baseline payload is unavailable.")
+
+    if val_run_id:
+        val_payload = kernel.run_data(val_run_id)
+        if not isinstance(val_payload, dict):
+            raise RuntimeError("validation baseline payload is unavailable.")
+        val_score = f"{val_payload['score']}%"
+        val_size = str(val_payload["evaluated_count"])
+    else:
+        val_score = "n/a"
+        val_size = "0"
+
+    lines = [
+        "You already have two baseline evaluation runs saved:",
+        "",
+        "1) Baseline train run",
+        f"- run_id: {train_run_id}",
+        f"- score: {train_payload['score']}%",
+        f"- size: {train_payload['evaluated_count']}",
+        "- diagnostics: per-example data available via run_data(run_id)",
+        "",
+        "2) Baseline validation run",
+        f"- run_id: {val_run_id or '(not available)'}",
+        f"- score: {val_score}",
+        f"- size: {val_size}",
+        "- diagnostics: aggregate-only (examples are hidden)",
+        "",
+        f"Current latest_run_id: {latest_run_id or '(not available)'}",
+    ]
+    return "\n".join(lines)
+
+
 class PromptOptimizationSignature(dspy.Signature):
     """You are optimizing prompts in an LLM program. You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
 
     ## Goal
-    - Achieve 100% `best_score` or get as close as possible. Keep optimizing until you run out of budget.
-    - `best_score` only updates from full validation on `split='val'`.
+    - Achieve the highest score you can on train and validation.
     - Use validation checkpoints throughout optimization when train-side changes look meaningfully better.
     - Maximize score on both splits. A large gap between them suggests overfitting.
-    - Use `optimization_status()` to check your current `best_score`, prompts, and remaining budget.
+    - Use `optimization_status()` to check prompts, remaining budget, and run IDs.
 
     ## Running experiments
     - Use `evaluate_program()` to test your changes.
@@ -223,6 +264,10 @@ class PromptOptimizationSignature(dspy.Signature):
         - It always evaluates the full validation set (no subset validation).
         - Any selector args passed with `split='val'` are ignored.
     - Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
+
+    ## Existing baseline runs
+    - `unoptimized_baseline_summary` includes baseline train and validation run IDs, scores, and sizes.
+    - Before spending budget on new evaluations, inspect the baseline train run first with `run_data(<baseline_train_run_id>)`.
 
     ## Diagnosing failures
     - Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool. When the final output is wrong, trace back through the steps to find where the error first appeared.
@@ -239,7 +284,7 @@ class PromptOptimizationSignature(dspy.Signature):
     - `split='val'` always runs the full validation set, so its cost is the full val-set size.
     - `split='train'` cost equals the number of selected train instances.
     - When budget is getting low, do an explicit affordability check before any evaluation call (`train` or `val`).
-    - When budget reaches zero, optimization ends immediately.
+    - When evaluation budget reaches zero, no more evaluations can run, but you may still continue analysis and decide which set of prompts you would like to submit.
 
     ## Coding Environment
     - Output exactly one code block per response, formatted as: ```python <code> ```
@@ -250,8 +295,8 @@ class PromptOptimizationSignature(dspy.Signature):
     - Printed output that exceeds the per-iteration character limit is truncated. However, only the display is cut short. The actual data itself is not lost.
     
     ## Submission
-    - Submit the prompts and `best_run_id` you believe will perform best on a held-out `test` subset of this dataset.
-    """
+    - Submit `optimized_dspy_program` as a dict[str, str] containing exactly one prompt for every step.
+    - Use the same step names returned by `optimization_status()['steps']` and trace `steps[*].step_name`."""
 
     unoptimized_dspy_program: str = dspy.InputField(
         desc=(
@@ -264,14 +309,11 @@ class PromptOptimizationSignature(dspy.Signature):
         desc="Current score and pass rate of the unoptimized program."
     )
     total_budget_remaining: int = dspy.InputField(
-        desc="How many evaluations you can run. Each dataset instance evaluated costs one unit."
+        desc="How many evaluations you can run."
     )
 
-    optimized_dspy_program: str = dspy.OutputField(
-        desc="The rewritten prompts for each step that achieved the best score."
-    )
-    best_run_id: str = dspy.OutputField(
-        desc="The run ID where the optimized prompts were validated."
+    optimized_dspy_program: dict[str, str] = dspy.OutputField(
+        desc='Final prompt map as {"step_name": "prompt text", ...} for all steps.'
     )
 
 class RLMSession:
@@ -373,10 +415,7 @@ class RLMSession:
     def run(
         self,
         kernel: OptimizationKernel,
-        *,
-        objective: str | None = None,
     ) -> dict[str, Any]:
-        del objective
         self._emit_event(
             "session_started",
             {
@@ -403,49 +442,34 @@ class RLMSession:
         )
         rlm = self._build_rlm(tools, sub_lm=sub_lm)
 
-        baseline_run_id = kernel.state.baseline_run_id or ""
-        baseline_payload = kernel.run_data(baseline_run_id) if baseline_run_id else {"summary_line": ""}
-        unoptimized_baseline_summary = str(baseline_payload.get("summary_line", ""))
+        unoptimized_baseline_summary = _build_unoptimized_baseline_summary(kernel)
         unoptimized_dspy_program = _render_program_text(kernel.program)
 
         try:
-            with dspy.context(lm=root_lm):
+            with dspy.context(lm=root_lm, adapter=dspy.JSONAdapter()):
                 prediction = rlm(
                     unoptimized_dspy_program=unoptimized_dspy_program,
                     unoptimized_baseline_summary=unoptimized_baseline_summary,
                     total_budget_remaining=int(kernel.state.remaining_budget),
                 )
 
-            best_run_id = str(
-                getattr(prediction, "best_run_id", "") or kernel.state.best_run_id or ""
-            )
-            optimized_dspy_program = str(
-                getattr(prediction, "optimized_dspy_program", "")
-            ).strip()
-            if not optimized_dspy_program:
-                optimized_dspy_program = _render_program_text(
-                    kernel.program,
-                    prompt_overrides=kernel.state.best_prompt_map,
-                )
-            final_reasoning = str(getattr(prediction, "final_reasoning", "")).strip()
-            if not final_reasoning:
-                final_reasoning = (
-                    f"Optimization completed. Best run id: {best_run_id}."
-                    if best_run_id
-                    else "Optimization completed."
+            submitted_prompt_map = getattr(prediction, "optimized_dspy_program", None)
+            if not isinstance(submitted_prompt_map, dict):
+                raise TypeError(
+                    "optimized_dspy_program must be returned as dict[str, str]."
                 )
 
+            final_reasoning = str(getattr(prediction, "final_reasoning", "")).strip()
             result = {
-                "optimized_dspy_program": optimized_dspy_program,
-                "best_run_id": best_run_id,
+                "optimized_dspy_program": dict(submitted_prompt_map),
                 "trajectory": getattr(prediction, "trajectory", []),
                 "final_reasoning": final_reasoning,
             }
             self._emit_event(
                 "session_completed",
                 {
-                    "best_run_id": best_run_id,
                     "final_reasoning": final_reasoning,
+                    "submitted_steps": sorted(str(key) for key in submitted_prompt_map.keys()),
                 },
             )
             return result
