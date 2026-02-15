@@ -118,9 +118,8 @@ class _ProgressSession:
         return {
             "optimized_dspy_program": "",
             "best_run_id": kernel.state.best_run_id,
-            "agent_report": "ok",
             "trajectory": [],
-            "final_reasoning": "",
+            "final_reasoning": "ok",
         }
 
 

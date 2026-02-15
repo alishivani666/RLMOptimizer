@@ -24,7 +24,6 @@ class FakeSession:
         return {
             "optimized_dspy_program": "optimized",
             "best_run_id": kernel.state.best_run_id,
-            "agent_report": "completed",
             "trajectory": [],
             "final_reasoning": "reasoning",
         }
@@ -41,9 +40,8 @@ class ThreadCheckSession:
         return {
             "optimized_dspy_program": "",
             "best_run_id": kernel.state.best_run_id,
-            "agent_report": "thread-check",
             "trajectory": [],
-            "final_reasoning": "",
+            "final_reasoning": "thread-check",
         }
 
 
@@ -73,9 +71,8 @@ class StatefulFlagSession:
         return {
             "optimized_dspy_program": "",
             "best_run_id": kernel.state.best_run_id,
-            "agent_report": "stateful-flag-check",
             "trajectory": [],
-            "final_reasoning": "",
+            "final_reasoning": "stateful-flag-check",
         }
 
 
@@ -117,7 +114,7 @@ def test_compile_returns_best_checkpoint_program():
     assert optimized(question="hello").answer == "hello"
 
 
-def test_compile_sets_agent_report_from_final_reasoning_when_report_missing():
+def test_compile_sets_agent_final_reasoning_from_session_result():
     optimizer = RLMDocstringOptimizer(
         max_iterations=3,
         root_lm=dspy.LM("openai/mock-root"),
@@ -131,7 +128,7 @@ def test_compile_sets_agent_report_from_final_reasoning_when_report_missing():
         metric=exact_metric,
     )
 
-    assert optimized.agent_report == "reasoning-only summary"
+    assert optimized.agent_final_reasoning == "reasoning-only summary"
 
 
 def test_rejects_model_name_strings_for_root_lm():

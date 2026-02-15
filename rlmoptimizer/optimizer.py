@@ -196,9 +196,8 @@ class RLMDocstringOptimizer(Teleprompter):
                 session_result = {
                     "optimized_dspy_program": "",
                     "best_run_id": kernel.state.best_run_id or "",
-                    "agent_report": "Stopped due to budget exhaustion.",
                     "trajectory": [],
-                    "final_reasoning": "",
+                    "final_reasoning": "Stopped due to budget exhaustion.",
                 }
 
             kernel.restore_best_prompts()
@@ -225,13 +224,10 @@ class RLMDocstringOptimizer(Teleprompter):
                 or ""
             )
             program.agent_best_run_id = agent_best_run_id
-            program.agent_report = str(
-                session_result.get("agent_report")
-                or session_result.get("final_reasoning")
-                or ""
-            )
             program.agent_trajectory = session_result.get("trajectory", [])
-            program.agent_final_reasoning = session_result.get("final_reasoning", "")
+            program.agent_final_reasoning = str(
+                session_result.get("final_reasoning") or ""
+            )
             return program
         finally:
             if debug_display is not None:

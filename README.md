@@ -58,7 +58,7 @@ result = optimized(question="What is the capital of France?")
 # Inspect what happened during optimization
 print(optimized.best_score)
 print(optimized.trial_logs)
-print(optimized.agent_report)
+print(optimized.agent_final_reasoning)
 ```
 
 Set `OPENAI_API_KEY` (or the appropriate provider key) in your environment.
@@ -130,7 +130,6 @@ optimized.best_score              # highest score achieved
 optimized.best_run_id             # run ID of the best evaluation
 optimized.baseline_run_id         # run ID of the canonical baseline (val if provided, else train)
 optimized.trial_logs              # list of all evaluation runs with scores and configs
-optimized.agent_report            # the agent's summary of what it tried
 optimized.agent_trajectory        # full trajectory of agent actions
 optimized.agent_final_reasoning   # the agent's final reasoning
 ```

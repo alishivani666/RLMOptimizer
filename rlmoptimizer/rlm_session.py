@@ -427,12 +427,9 @@ class RLMSession:
                     kernel.program,
                     prompt_overrides=kernel.state.best_prompt_map,
                 )
-            agent_report = str(
-                getattr(prediction, "agent_report", "")
-                or getattr(prediction, "final_reasoning", "")
-            ).strip()
-            if not agent_report:
-                agent_report = (
+            final_reasoning = str(getattr(prediction, "final_reasoning", "")).strip()
+            if not final_reasoning:
+                final_reasoning = (
                     f"Optimization completed. Best run id: {best_run_id}."
                     if best_run_id
                     else "Optimization completed."
@@ -441,15 +438,14 @@ class RLMSession:
             result = {
                 "optimized_dspy_program": optimized_dspy_program,
                 "best_run_id": best_run_id,
-                "agent_report": agent_report,
                 "trajectory": getattr(prediction, "trajectory", []),
-                "final_reasoning": getattr(prediction, "final_reasoning", ""),
+                "final_reasoning": final_reasoning,
             }
             self._emit_event(
                 "session_completed",
                 {
                     "best_run_id": best_run_id,
-                    "agent_report": agent_report,
+                    "final_reasoning": final_reasoning,
                 },
             )
             return result

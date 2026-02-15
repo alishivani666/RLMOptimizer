@@ -29,9 +29,8 @@ class _NoopSession:
         return {
             "optimized_dspy_program": "",
             "best_run_id": kernel.state.best_run_id,
-            "agent_report": "noop",
             "trajectory": [],
-            "final_reasoning": "",
+            "final_reasoning": "noop",
         }
 
 
