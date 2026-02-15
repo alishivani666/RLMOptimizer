@@ -247,10 +247,9 @@ class PromptOptimizationSignature(dspy.Signature):
     """You are optimizing prompts in an LLM program. You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
 
     ## Goal
-    - Achieve the highest score you can on train and validation.
-    - Use validation checkpoints throughout optimization when train-side changes look meaningfully better.
+    - Achieve the highest score you can on train and validation, while ensuring these improvements generalize to a held-out test set. 
     - Maximize score on both splits. A large gap between them suggests overfitting.
-    - Use `optimization_status()` to check prompts, remaining budget, and run IDs.
+    - Use validation checkpoints throughout optimization when train-side changes look meaningfully better.
 
     ## Running experiments
     - Use `evaluate_program()` to test your changes.
@@ -264,7 +263,7 @@ class PromptOptimizationSignature(dspy.Signature):
         - It always evaluates the full validation set (no subset validation).
         - Any selector args passed with `split='val'` are ignored.
     - Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
-
+    
     ## Existing baseline runs
     - `unoptimized_baseline_summary` includes baseline train and validation run IDs, scores, and sizes.
     - Before spending budget on new evaluations, inspect the baseline train run first with `run_data(<baseline_train_run_id>)`.
@@ -272,10 +271,6 @@ class PromptOptimizationSignature(dspy.Signature):
     ## Diagnosing failures
     - Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool. When the final output is wrong, trace back through the steps to find where the error first appeared.
     - In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
-
-    ## What you can change
-    - You can only modify prompt text. Use `update_prompt()` to rewrite one step's prompt.
-    - The program structure-which steps exist, their inputs and outputs-is fixed.
 
     ## Budget
     - Each instance evaluated costs one budget unit.
