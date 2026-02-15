@@ -46,6 +46,7 @@ class RLMDocstringOptimizer(Teleprompter):
         run_storage_dir: str | Path | None = None,
         rlm_factory: Callable[..., Any] | None = None,
         session_cls: type[RLMSession] = RLMSession,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         super().__init__()
         if max_iterations <= 0:
@@ -73,6 +74,7 @@ class RLMDocstringOptimizer(Teleprompter):
         )
         self.rlm_factory = rlm_factory
         self.session_cls = session_cls
+        self.event_callback = event_callback
 
         self.root_lm = self._require_lm(root_lm, role="root_lm")
         self.sub_lm = self._optional_lm(sub_lm, role="sub_lm")
@@ -142,6 +144,7 @@ class RLMDocstringOptimizer(Teleprompter):
             max_output_chars=self.rlm_max_output_chars,
             run_storage_dir=self.run_storage_dir,
             debug_display=debug_display,
+            event_callback=self.event_callback,
         )
 
         try:
@@ -175,6 +178,8 @@ class RLMDocstringOptimizer(Teleprompter):
                 session_kwargs["debug_display"] = debug_display
             if _accepts_param(self.session_cls.__init__, "root_stateful_session"):
                 session_kwargs["root_stateful_session"] = self.root_stateful_session
+            if _accepts_param(self.session_cls.__init__, "event_callback"):
+                session_kwargs["event_callback"] = self.event_callback
             session = self.session_cls(**session_kwargs)
 
             session_result: dict[str, Any] = {}

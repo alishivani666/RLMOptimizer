@@ -10,6 +10,7 @@ from dspy.primitives.code_interpreter import CodeInterpreterError
 from dspy.primitives.prediction import Prediction
 
 from .budgeting import BudgetMeteredLM
+from .interpreter import ReRegisteringPythonInterpreter
 from .kernel import OptimizationKernel
 from .root_state import maybe_wrap_stateful_root_lm
 from .tools import OptimizationTools
@@ -25,11 +26,13 @@ class _InstrumentedRLM(dspy.RLM):
         *args: Any,
         iteration_start_callback: Callable[[int, int, str, str], None] | None = None,
         iteration_output_callback: Callable[[str], None] | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._iteration_start_callback = iteration_start_callback
         self._iteration_output_callback = iteration_output_callback
+        self._event_callback = event_callback
 
     def _execute_iteration(self, repl, variables, history, iteration, input_args, output_field_names):
         variables_info = [variable.format() for variable in variables]
@@ -54,6 +57,16 @@ class _InstrumentedRLM(dspy.RLM):
         try:
             execution_result = repl.execute(code, variables=dict(input_args))
         except (CodeInterpreterError, SyntaxError) as exc:
+            self._emit_event(
+                "iteration_error",
+                {
+                    "iteration": iteration,
+                    "max_iterations": self.max_iterations,
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                    "code": code,
+                },
+            )
             execution_result = f"[Error] {exc}"
 
         result = self._process_execution_result(
@@ -66,6 +79,15 @@ class _InstrumentedRLM(dspy.RLM):
     def _emit_iteration_start(
         self, *, iteration: int, reasoning: str, code: str
     ) -> None:
+        self._emit_event(
+            "iteration_started",
+            {
+                "iteration": iteration,
+                "max_iterations": self.max_iterations,
+                "reasoning": reasoning,
+                "code": code,
+            },
+        )
         self._safe_display_call(
             self._iteration_start_callback,
             iteration,
@@ -75,7 +97,22 @@ class _InstrumentedRLM(dspy.RLM):
         )
 
     def _emit_iteration_output(self, output: str) -> None:
+        self._emit_event(
+            "iteration_output",
+            {
+                "output": output,
+            },
+        )
         self._safe_display_call(self._iteration_output_callback, output)
+
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        callback = self._event_callback
+        if callback is None:
+            return
+        try:
+            callback({"source": "rlm", "event": event_type, **payload})
+        except Exception:
+            pass
 
     def _safe_display_call(self, callback: Callable[..., None] | None, *args: Any) -> None:
         if callback is None:
@@ -169,17 +206,22 @@ class PromptOptimizationSignature(dspy.Signature):
 
     ## Goal
     - Achieve 100% `best_score` or get as close as possible. Keep optimizing until you run out of budget.
-    - `best_score` only updates from evaluation on the validation split. Run validation whenever you see a meaningful improvement on the train split.
+    - `best_score` only updates from full validation on `split='val'`.
+    - Use validation checkpoints throughout optimization when train-side changes look meaningfully better.
     - Maximize score on both splits. A large gap between them suggests overfitting.
     - Use `optimization_status()` to check your current `best_score`, prompts, and remaining budget.
 
     ## Running experiments
-    - Use `evaluate_program()` to test your changes. Key arguments for efficient experimentation:
-        - `limit`: Evaluate a subset (e.g., `limit=15`) for quick iteration instead of the full dataset.
-        - `sample`: With `limit`, use `sample='random'` to select a representative random subset instead of always the first N. Use `sample_seed` for reproducibility.
-        - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id). The most budget-efficient way to check if a fix worked.
+    - Use `evaluate_program()` to test your changes.
+    - Train split (`split='train'`) for fast iteration and diagnostics:
+        - `limit`: Evaluate a subset (e.g., `limit=15`).
+        - `sample`: Use `sample='random'` for random sampling; use `sample_seed` for reproducibility.
+        - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id).
         - `ids`: Target specific instances by ID (e.g., `ids='3,7,12'` or `ids='10-20'`).
-        - `split`: Use `'train'` for experimentation. Reserve `'val'` for final validation to confirm generalization.
+    - Validation split (`split='val'`) for checkpointing generalization:
+        - Use `evaluate_program(split='val')` when you want a validation checkpoint.
+        - It always evaluates the full validation set (no subset validation).
+        - Any selector args passed with `split='val'` are ignored.
     - Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
 
     ## Diagnosing failures
@@ -191,7 +233,12 @@ class PromptOptimizationSignature(dspy.Signature):
     - The program structure-which steps exist, their inputs and outputs-is fixed.
 
     ## Budget
-    - Each instance evaluated costs one budget unit. Budget is shown in `total_budget_remaining`.
+    - Each instance evaluated costs one budget unit.
+    - Every `evaluate_program()` result includes `remaining_budget`; treat that as your primary budget signal and keep track of it as you iterate.
+    - A requested evaluation fails if its required instances exceed remaining budget.
+    - `split='val'` always runs the full validation set, so its cost is the full val-set size.
+    - `split='train'` cost equals the number of selected train instances.
+    - When budget is getting low, do an explicit affordability check before any evaluation call (`train` or `val`).
     - When budget reaches zero, optimization ends immediately.
 
     ## Coding Environment
@@ -200,7 +247,11 @@ class PromptOptimizationSignature(dspy.Signature):
     - Your environment persists across iterations:
         - Imports, variables, and functions stay available in later iterations.
         - Define helpers early and reuse them. Do not rewrite the same code each turn.
-    - Printed output that exceeds the per-iteration character limit is truncated. However, only the display is cut short. The actual data itself is not lost."""
+    - Printed output that exceeds the per-iteration character limit is truncated. However, only the display is cut short. The actual data itself is not lost.
+    
+    ## Submission
+    - Submit the prompts and `best_run_id` you believe will perform best on a held-out `test` subset of this dataset.
+    """
 
     unoptimized_dspy_program: str = dspy.InputField(
         desc=(
@@ -236,6 +287,7 @@ class RLMSession:
         rlm_factory: Callable[..., Any] | None = None,
         debug_display: Any | None = None,
         root_stateful_session: bool = True,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._root_lm = root_lm
         self._sub_lm = sub_lm
@@ -246,6 +298,16 @@ class RLMSession:
         self._rlm_factory = rlm_factory
         self._debug_display = debug_display
         self._root_stateful_session = bool(root_stateful_session)
+        self._event_callback = event_callback
+
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        callback = self._event_callback
+        if callback is None:
+            return
+        try:
+            callback({"source": "session", "event": event_type, **payload})
+        except Exception:
+            pass
 
     def _rlm_verbose_enabled(self) -> bool:
         """Enable DSPy text logs only when no rich debugger is active."""
@@ -286,10 +348,23 @@ class RLMSession:
         if self._rlm_factory is not None:
             return self._rlm_factory(**kwargs)
 
-        if self._debug_display is not None:
+        kwargs["interpreter"] = ReRegisteringPythonInterpreter()
+
+        if self._debug_display is not None or self._event_callback is not None:
+            start_callback = (
+                self._debug_display.show_iteration_start
+                if self._debug_display is not None
+                else None
+            )
+            output_callback = (
+                self._debug_display.show_iteration_output
+                if self._debug_display is not None
+                else None
+            )
             return _InstrumentedRLM(
-                iteration_start_callback=self._debug_display.show_iteration_start,
-                iteration_output_callback=self._debug_display.show_iteration_output,
+                iteration_start_callback=start_callback,
+                iteration_output_callback=output_callback,
+                event_callback=self._event_callback,
                 **kwargs,
             )
 
@@ -302,14 +377,27 @@ class RLMSession:
         objective: str | None = None,
     ) -> dict[str, Any]:
         del objective
-        tools = OptimizationTools(kernel)
+        self._emit_event(
+            "session_started",
+            {
+                "max_iterations": self._max_iterations,
+                "max_llm_calls": self._max_llm_calls,
+            },
+        )
+        tools = OptimizationTools(kernel, event_callback=self._event_callback)
         root_lm = BudgetMeteredLM(
             lm=self._build_root_lm_for_run(),
             budget_consumer=kernel,
             source="root",
+            event_callback=self._event_callback,
         )
         sub_lm = (
-            BudgetMeteredLM(lm=self._sub_lm, budget_consumer=kernel, source="sub")
+            BudgetMeteredLM(
+                lm=self._sub_lm,
+                budget_consumer=kernel,
+                source="sub",
+                event_callback=self._event_callback,
+            )
             if self._sub_lm is not None
             else None
         )
@@ -320,35 +408,57 @@ class RLMSession:
         unoptimized_baseline_summary = str(baseline_payload.get("summary_line", ""))
         unoptimized_dspy_program = _render_program_text(kernel.program)
 
-        with dspy.context(lm=root_lm):
-            prediction = rlm(
-                unoptimized_dspy_program=unoptimized_dspy_program,
-                unoptimized_baseline_summary=unoptimized_baseline_summary,
-                total_budget_remaining=int(kernel.state.remaining_budget),
-            )
+        try:
+            with dspy.context(lm=root_lm):
+                prediction = rlm(
+                    unoptimized_dspy_program=unoptimized_dspy_program,
+                    unoptimized_baseline_summary=unoptimized_baseline_summary,
+                    total_budget_remaining=int(kernel.state.remaining_budget),
+                )
 
-        best_run_id = str(getattr(prediction, "best_run_id", "") or kernel.state.best_run_id or "")
-        optimized_dspy_program = str(getattr(prediction, "optimized_dspy_program", "")).strip()
-        if not optimized_dspy_program:
-            optimized_dspy_program = _render_program_text(
-                kernel.program,
-                prompt_overrides=kernel.state.best_prompt_map,
+            best_run_id = str(
+                getattr(prediction, "best_run_id", "") or kernel.state.best_run_id or ""
             )
-        agent_report = str(
-            getattr(prediction, "agent_report", "")
-            or getattr(prediction, "final_reasoning", "")
-        ).strip()
-        if not agent_report:
-            agent_report = (
-                f"Optimization completed. Best run id: {best_run_id}."
-                if best_run_id
-                else "Optimization completed."
-            )
+            optimized_dspy_program = str(
+                getattr(prediction, "optimized_dspy_program", "")
+            ).strip()
+            if not optimized_dspy_program:
+                optimized_dspy_program = _render_program_text(
+                    kernel.program,
+                    prompt_overrides=kernel.state.best_prompt_map,
+                )
+            agent_report = str(
+                getattr(prediction, "agent_report", "")
+                or getattr(prediction, "final_reasoning", "")
+            ).strip()
+            if not agent_report:
+                agent_report = (
+                    f"Optimization completed. Best run id: {best_run_id}."
+                    if best_run_id
+                    else "Optimization completed."
+                )
 
-        return {
-            "optimized_dspy_program": optimized_dspy_program,
-            "best_run_id": best_run_id,
-            "agent_report": agent_report,
-            "trajectory": getattr(prediction, "trajectory", []),
-            "final_reasoning": getattr(prediction, "final_reasoning", ""),
-        }
+            result = {
+                "optimized_dspy_program": optimized_dspy_program,
+                "best_run_id": best_run_id,
+                "agent_report": agent_report,
+                "trajectory": getattr(prediction, "trajectory", []),
+                "final_reasoning": getattr(prediction, "final_reasoning", ""),
+            }
+            self._emit_event(
+                "session_completed",
+                {
+                    "best_run_id": best_run_id,
+                    "agent_report": agent_report,
+                },
+            )
+            return result
+        except Exception as exc:
+            self._emit_event(
+                "session_failed",
+                {
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                },
+            )
+            raise

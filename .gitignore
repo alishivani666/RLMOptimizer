@@ -38,6 +38,7 @@ hole/
 
 # Benchmarks are intentionally excluded from initial public release
 benchmarks/
+benchmark_runs/
 **/benchmarks/
 rlmoptimizer/benchmarks/
 
@@ -48,3 +49,5 @@ rlmoptimizer/benchmarks/
 **/wiki.abstracts*.jsonl
 trace.md
 demo_trajectory.py
+changelog.md
+.codex/environments/environment.toml

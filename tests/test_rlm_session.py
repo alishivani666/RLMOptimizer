@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import dspy
+
+from rlmoptimizer.interpreter import ReRegisteringPythonInterpreter
 from rlmoptimizer.rlm_session import RLMSession
 from rlmoptimizer.kernel import OptimizationKernel
 from rlmoptimizer.tools import OptimizationTools
@@ -101,3 +104,19 @@ def test_build_rlm_passes_expected_tool_names(tmp_path: Path):
     ]
 
     kernel.close()
+
+
+def test_build_rlm_uses_local_resilient_interpreter():
+    session = RLMSession(
+        root_lm=object(),
+        sub_lm=None,
+        max_iterations=3,
+        max_llm_calls=10,
+        max_output_chars=5_000,
+        verbose=False,
+    )
+
+    rlm = session._build_rlm(_FakeTools(), sub_lm=None)
+
+    assert isinstance(rlm, dspy.RLM)
+    assert isinstance(rlm._interpreter, ReRegisteringPythonInterpreter)

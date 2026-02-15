@@ -45,6 +45,7 @@ class OptimizationKernel:
         max_output_chars: int,
         run_storage_dir: Path | None = None,
         debug_display: Any | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if max_iterations <= 0:
             raise ValueError("max_iterations must be greater than zero")
@@ -58,9 +59,11 @@ class OptimizationKernel:
         self.eval_lm = eval_lm
         self.num_threads = int(num_threads)
         self.max_output_chars = int(max_output_chars)
-        self.max_budget = int(max_iterations * len(trainset))
+        val_size = len(valset) if valset is not None else 0
+        self.max_budget = int(max_iterations * len(trainset) + val_size)
         self.dataset_rows = build_dataset_rows(trainset, valset)
         self._budget_lock = threading.Lock()
+        self._event_callback = event_callback
 
         self._storage_tempdir: tempfile.TemporaryDirectory[str] | None = None
         if run_storage_dir is None:
@@ -78,6 +81,15 @@ class OptimizationKernel:
         )
         self._baseline_structure_hash = structure_hash(self.program)
         self._debug_display = debug_display
+
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        callback = self._event_callback
+        if callback is None:
+            return
+        try:
+            callback({"source": "kernel", "event": event_type, **payload})
+        except Exception:
+            pass
 
     def _best_tracking_split(self) -> str:
         """Track best runs on full val when available, else full train."""
@@ -105,15 +117,45 @@ class OptimizationKernel:
             self._storage_tempdir = None
 
     def run_baseline(self) -> dict[str, Any]:
-        train_payload = self._evaluate_program_raw(split="train")
+        self._emit_event(
+            "baseline_started",
+            {
+                "train_size": len(self.dataset_rows["train"]),
+                "val_size": len(self.dataset_rows["val"]),
+            },
+        )
+        train_payload = self._evaluate_program_raw(
+            split="train",
+            charge_budget=False,
+            phase="baseline_train",
+        )
         baseline_payload = train_payload
+        val_payload: dict[str, Any] | None = None
 
         # When val exists, initialize best-tracking on the same split used for
         # best-run selection so comparisons stay val-to-val.
         if self._best_tracking_split() == "val":
-            baseline_payload = self._evaluate_program_raw(split="val")
+            val_payload = self._evaluate_program_raw(
+                split="val",
+                charge_budget=False,
+                phase="baseline_val",
+            )
+            baseline_payload = val_payload
 
         self.state.baseline_run_id = str(baseline_payload["run_id"])
+        self._emit_event(
+            "baseline_completed",
+            {
+                "baseline_run_id": self.state.baseline_run_id,
+                "baseline_split": baseline_payload.get("split"),
+                "train_run_id": str(train_payload.get("run_id", "")),
+                "val_run_id": (
+                    str(val_payload.get("run_id", ""))
+                    if val_payload is not None
+                    else None
+                ),
+            },
+        )
         return self._public_payload_view(baseline_payload)
 
     def _run_path(self, run_id: str) -> Path:
@@ -197,6 +239,25 @@ class OptimizationKernel:
             failed_from_run=failed_from_run,
         )
 
+    def _canonicalize_public_evaluation_request(
+        self,
+        *,
+        split: str,
+        limit: int | None,
+        ids: str | None,
+        sample: SampleMode,
+        sample_seed: int | None,
+        failed_from_run: str | None,
+    ) -> tuple[int | None, str | None, SampleMode, int | None, str | None]:
+        """Canonicalize public evaluate_program args while preserving split semantics.
+
+        Validation runs are always full-split. For split='val', train-only
+        selectors are ignored and sample is forced to 'first'.
+        """
+        if split != "val":
+            return limit, ids, sample, sample_seed, failed_from_run
+        return None, None, "first", None, None
+
     def _public_payload_view(self, payload: dict[str, Any]) -> dict[str, Any]:
         public_payload = dict(payload)
         if str(public_payload.get("split", "")) == "val":
@@ -215,14 +276,29 @@ class OptimizationKernel:
         if units <= 0:
             return self.state.remaining_budget
 
+        rejected = False
         with self._budget_lock:
             if self.state.remaining_budget < units:
-                raise BudgetExceededError(
-                    f"BUDGET_EXCEEDED: requested {units} budget units for {reason} "
-                    f"with only {self.state.remaining_budget} remaining"
-                )
-            self.state.remaining_budget -= units
-            return self.state.remaining_budget
+                rejected = True
+                remaining_budget = self.state.remaining_budget
+            else:
+                self.state.remaining_budget -= units
+                remaining_budget = self.state.remaining_budget
+
+        event_payload = {
+            "units": units,
+            "reason": reason,
+            "remaining_budget": remaining_budget,
+        }
+        if rejected:
+            self._emit_event("budget_charge_rejected", event_payload)
+            raise BudgetExceededError(
+                f"BUDGET_EXCEEDED: requested {units} budget units for {reason} "
+                f"with only {remaining_budget} remaining"
+            )
+
+        self._emit_event("budget_charged", event_payload)
+        return remaining_budget
 
     def charge_llm_requests(self, *, source: str, requests: int = 1) -> int:
         remaining = self._charge_budget(units=requests, reason=f"{source} LM requests")
@@ -241,6 +317,8 @@ class OptimizationKernel:
         sample_seed: int | None = None,
         failed_from_run: str | None = None,
         _progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        charge_budget: bool = True,
+        phase: str = "agent",
     ) -> dict[str, Any]:
         if sample not in {"first", "random"}:
             raise ValueError("sample must be one of: first, random")
@@ -266,8 +344,31 @@ class OptimizationKernel:
             raise ValueError("no examples selected for evaluation")
 
         evaluated_count = len(selected_rows)
-        self._charge_budget(units=evaluated_count, reason="evaluation examples")
-        self.state.evaluated_examples += evaluated_count
+        self._emit_event(
+            "evaluation_started",
+            {
+                "split": split,
+                "phase": phase,
+                "config": {
+                    "split": split,
+                    "limit": limit,
+                    "ids": ids,
+                    "sample": sample,
+                    "sample_seed": sample_seed,
+                    "failed_from_run": failed_from_run,
+                },
+                "selected_example_ids": (
+                    [row.example_id for row in selected_rows]
+                    if split == "train"
+                    else []
+                ),
+                "selected_count": evaluated_count,
+                "charge_budget": charge_budget,
+            },
+        )
+        if charge_budget:
+            self._charge_budget(units=evaluated_count, reason="evaluation examples")
+            self.state.evaluated_examples += evaluated_count
 
         progress_callback, progress_reporter = self._progress_callback_with_reporter(
             external_callback=_progress_callback
@@ -334,6 +435,16 @@ class OptimizationKernel:
 
         if self._debug_display is None:
             print(summary)
+        event_payload = self._public_payload_view(payload)
+        self._emit_event(
+            "evaluation_completed",
+            {
+                "split": split,
+                "phase": phase,
+                "run_id": run_id,
+                "payload": event_payload,
+            },
+        )
         return payload
 
     def _progress_callback_with_reporter(
@@ -371,6 +482,16 @@ class OptimizationKernel:
         failed_from_run: str | None = None,
         _progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        limit, ids, sample, sample_seed, failed_from_run = (
+            self._canonicalize_public_evaluation_request(
+                split=split,
+                limit=limit,
+                ids=ids,
+                sample=sample,
+                sample_seed=sample_seed,
+                failed_from_run=failed_from_run,
+            )
+        )
         self._validate_public_evaluation_request(
             split=split,
             limit=limit,
@@ -410,13 +531,34 @@ class OptimizationKernel:
 
     def update_prompt(self, step_name: str, new_text: str) -> dict[str, Any]:
         if not step_name:
+            self._emit_event(
+                "prompt_update_rejected",
+                {
+                    "step_name": step_name,
+                    "reason": "missing_step_name",
+                },
+            )
             raise PromptUpdateError("step_name must be provided")
         text = str(new_text).strip()
         if not text:
+            self._emit_event(
+                "prompt_update_rejected",
+                {
+                    "step_name": step_name,
+                    "reason": "empty_prompt_text",
+                },
+            )
             raise PromptUpdateError("new_text must be non-empty")
 
         step_modules = {name: module for name, module in self.program.named_predictors()}
         if step_name not in step_modules:
+            self._emit_event(
+                "prompt_update_rejected",
+                {
+                    "step_name": step_name,
+                    "reason": "unknown_step",
+                },
+            )
             raise PromptUpdateError(f"unknown step: {step_name}")
 
         step_module = step_modules[step_name]
@@ -439,17 +581,33 @@ class OptimizationKernel:
             changed and changed != {step_name}
         ):
             step_module.signature = old_signature
+            self._emit_event(
+                "prompt_update_rejected",
+                {
+                    "step_name": step_name,
+                    "reason": "non_prompt_structure_change",
+                },
+            )
             raise PromptUpdateError(
                 "prompt update rejected: attempted change outside signature.instructions"
             )
 
         self.state.current_prompt_map = after_prompts
-        return {
+        result = {
             "status": "ok",
             "step_name": step_name,
             "prompt_hash": _sha256_text(text),
             "prompt_preview": text[:200],
         }
+        self._emit_event(
+            "prompt_updated",
+            {
+                "step_name": step_name,
+                "new_text": text,
+                "result": result,
+            },
+        )
+        return result
 
     def optimization_status(self) -> dict[str, Any]:
         status = {

@@ -73,13 +73,46 @@ def _tool_method(func: _F) -> _F:
 
     @functools.wraps(func)
     def wrapper(self: OptimizationTools, *args: Any, **kwargs: Any) -> Any:
+        tool_name = func.__name__
+        self._emit_event(
+            "tool_call_started",
+            {
+                "tool_name": tool_name,
+                "args": args,
+                "kwargs": kwargs,
+            },
+        )
         try:
             result = func(self, *args, **kwargs)
-            return _sanitize_tool_payload(result)
+            sanitized = _sanitize_tool_payload(result)
+            self._emit_event(
+                "tool_call_completed",
+                {
+                    "tool_name": tool_name,
+                    "result": sanitized,
+                },
+            )
+            return sanitized
         except BudgetExceededError:
+            self._emit_event(
+                "tool_call_failed",
+                {
+                    "tool_name": tool_name,
+                    "error_type": "BudgetExceededError",
+                },
+            )
             raise
         except _TOOL_ERRORS as exc:
-            return {"error": str(exc)}
+            error_payload = {"error": str(exc)}
+            self._emit_event(
+                "tool_call_completed",
+                {
+                    "tool_name": tool_name,
+                    "result": error_payload,
+                    "error_type": exc.__class__.__name__,
+                },
+            )
+            return error_payload
 
     return wrapper  # type: ignore[return-value]
 
@@ -187,8 +220,23 @@ class OptimizationTools:
     argument-level descriptions are included in the generated tool schema.
     """
 
-    def __init__(self, kernel: OptimizationKernel) -> None:
+    def __init__(
+        self,
+        kernel: OptimizationKernel,
+        *,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self._kernel = kernel
+        self._event_callback = event_callback
+
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        callback = self._event_callback
+        if callback is None:
+            return
+        try:
+            callback({"source": "tools", "event": event_type, **payload})
+        except Exception:
+            pass
 
     @_tool_method
     def evaluate_program(
@@ -216,17 +264,18 @@ class OptimizationTools:
         Args:
             split: Dataset split to evaluate. Allowed values: ``train`` or ``val``.
                 ``val`` only supports full-split evaluation.
-            limit: Maximum number of selected examples to evaluate. Must be null
-                for ``split=val``.
+            limit: Maximum number of selected examples to evaluate. Train-only.
+                Ignored for ``split=val``.
             ids: Optional ID selector string such as ``"1,2,8"`` or ``"10-20"``.
-                Must be null for ``split=val``.
+                Train-only. Ignored for ``split=val``.
             sample: Selection strategy for ``limit``. ``first`` keeps order,
                 ``random`` samples with replacement disabled. For ``split=val``,
-                sample must be ``first``.
+                this is ignored and treated as ``first``.
             sample_seed: Optional random seed used only when ``sample=random``.
-                Must be null for ``split=val``.
+                Train-only. Ignored for ``split=val``.
             failed_from_run: Optional previous run ID. When set, evaluate only
-                examples that failed in that run. Must be null for ``split=val``.
+                examples that failed in that run. Train-only. Ignored for
+                ``split=val``.
 
         Returns:
             A dict with run metadata and score summary. For train runs, this
@@ -358,11 +407,11 @@ For split='val', evaluation is blind and aggregate-only:
 The steps list is your primary diagnostic tool for train runs. When an instance fails, trace through the steps to find where the error originated. Check: Did step 0 receive correct inputs but produce wrong outputs? Did step 1 receive wrong inputs from step 0? Find the first step that went wrong.""",
                 arg_desc={
                     "split": "str. 'train' or 'val'. Use 'train' for experimentation and diagnostics. Use 'val' for holdout scoring only.",
-                    "limit": "int or null. Train only. Maximum instances to evaluate. For split='val', must be null (full split only).",
-                    "ids": "str or list or null. Train only selector (e.g., '1,2,8' or '10-20'). For split='val', must be null.",
-                    "sample": "str. Train: 'first' or 'random'. For split='val', must be 'first'.",
-                    "sample_seed": "int or null. Train only, used with sample='random'. For split='val', must be null.",
-                    "failed_from_run": "str or null. Train only. Evaluate only examples that failed in a prior train run. For split='val', must be null.",
+                    "limit": "int or null. Train-only max instances to evaluate. Ignored for split='val' (validation is always full-split).",
+                    "ids": "str or list or null. Train-only selector (e.g., '1,2,8' or '10-20'). Ignored for split='val'.",
+                    "sample": "str. Train uses 'first' or 'random'. Ignored for split='val' and treated as 'first'.",
+                    "sample_seed": "int or null. Train-only seed for sample='random'. Ignored for split='val'.",
+                    "failed_from_run": "str or null. Train-only filter to previously failed examples. Ignored for split='val'.",
                 },
             ),
             dspy.Tool(

@@ -181,12 +181,12 @@ def test_kernel_charges_root_and_sub_lm_calls():
 
     assert result["best_run_id"] == kernel.state.best_run_id
     assert "[step]" in result["optimized_dspy_program"]
-    assert kernel.state.evaluated_examples == 4
+    assert kernel.state.evaluated_examples == 0
     assert kernel.state.root_lm_calls == 2
     assert kernel.state.sub_lm_calls == 1
-    assert kernel.state.remaining_budget == 1
+    assert kernel.state.remaining_budget == 5
     status = kernel.optimization_status()
-    assert status["evaluated_examples"] == 4
+    assert status["evaluated_examples"] == 0
     assert status["root_lm_calls"] == 2
     assert status["sub_lm_calls"] == 1
 
@@ -196,7 +196,7 @@ def test_kernel_charges_root_and_sub_lm_calls():
 def test_kernel_budget_exceeded_by_lm_calls():
     kernel = OptimizationKernel(
         program=RuleProgram(),
-        trainset=build_trainset(3),
+        trainset=build_trainset(2),
         valset=None,
         metric=exact_metric,
         eval_lm=None,

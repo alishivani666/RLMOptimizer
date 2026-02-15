@@ -23,15 +23,15 @@ def test_budget_charged_by_actual_evaluated_count(tmp_path: Path):
     baseline = kernel.run_baseline()
     assert baseline["split"] == "val"
     assert baseline["evaluated_count"] == 3
-    assert kernel.state.remaining_budget == 7
+    assert kernel.state.remaining_budget == 18
 
     targeted = kernel.evaluate_program(ids="1,3,5")
     assert targeted["evaluated_count"] == 3
-    assert kernel.state.remaining_budget == 4
+    assert kernel.state.remaining_budget == 15
 
     val_eval = kernel.evaluate_program(split="val")
     assert val_eval["evaluated_count"] == 3
     assert val_eval["examples"] == []
-    assert kernel.state.remaining_budget == 1
+    assert kernel.state.remaining_budget == 12
 
     kernel.close()

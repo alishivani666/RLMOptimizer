@@ -49,7 +49,7 @@ def test_evaluate_and_run_data_round_trip(tmp_path: Path):
 
     status = kernel.optimization_status()
     assert status["baseline_run_id"] == run_id
-    assert status["remaining_budget"] == 8
+    assert status["remaining_budget"] == 12
 
     kernel.close()
 
@@ -298,7 +298,7 @@ def test_tools_val_runs_are_blind_and_redacted(tmp_path: Path):
     kernel.close()
 
 
-def test_tools_reject_non_full_val_evaluations(tmp_path: Path):
+def test_tools_val_ignores_train_only_selectors(tmp_path: Path):
     kernel = OptimizationKernel(
         program=RuleProgram(),
         trainset=build_trainset(4),
@@ -312,17 +312,25 @@ def test_tools_reject_non_full_val_evaluations(tmp_path: Path):
     )
     tools = OptimizationTools(kernel)
 
-    invalid_calls = [
+    val_calls = [
         {"limit": 1},
         {"ids": "1"},
         {"sample": "random"},
         {"sample_seed": 42},
     ]
-    for kwargs in invalid_calls:
+    for kwargs in val_calls:
         payload = tools.evaluate_program(split="val", **kwargs)
         assert isinstance(payload, dict)
-        assert "error" in payload
-        assert "split='val'" in str(payload["error"])
+        assert "error" not in payload
+        assert payload["split"] == "val"
+        assert payload["evaluated_count"] == 2
+        assert payload["examples"] == []
+        assert payload["config"]["split"] == "val"
+        assert payload["config"]["limit"] == ""
+        assert payload["config"]["ids"] == ""
+        assert payload["config"]["sample"] == "first"
+        assert payload["config"]["sample_seed"] == ""
+        assert payload["config"]["failed_from_run"] == ""
 
     train_run = tools.evaluate_program(split="train", limit=1)
     failed_from_run_payload = tools.evaluate_program(
@@ -330,8 +338,11 @@ def test_tools_reject_non_full_val_evaluations(tmp_path: Path):
         failed_from_run=train_run["run_id"],
     )
     assert isinstance(failed_from_run_payload, dict)
-    assert "error" in failed_from_run_payload
-    assert "split='val'" in str(failed_from_run_payload["error"])
+    assert "error" not in failed_from_run_payload
+    assert failed_from_run_payload["split"] == "val"
+    assert failed_from_run_payload["evaluated_count"] == 2
+    assert failed_from_run_payload["config"]["failed_from_run"] == ""
+    assert failed_from_run_payload["config"]["sample"] == "first"
 
     kernel.close()
 
