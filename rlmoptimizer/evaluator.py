@@ -226,9 +226,9 @@ def _evaluate_single_row(
 
     try:
         if eval_lm is None:
-            context = dspy.context(trace=trace, adapter=None)
+            context = dspy.context(trace=trace)
         else:
-            context = dspy.context(lm=eval_lm, trace=trace, adapter=None)
+            context = dspy.context(lm=eval_lm, trace=trace)
 
         with context:
             prediction = program(**inputs)

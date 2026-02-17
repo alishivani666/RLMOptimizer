@@ -42,6 +42,7 @@ class RLMDocstringOptimizer(Teleprompter):
         rlm_max_llm_calls: int = 200,
         rlm_max_output_chars: int = 10000,
         root_stateful_session: bool = True,
+        rlm_multiturn_history: bool = False,
         verbose: bool = False,
         run_storage_dir: str | Path | None = None,
         rlm_factory: Callable[..., Any] | None = None,
@@ -61,6 +62,8 @@ class RLMDocstringOptimizer(Teleprompter):
             raise ValueError("rlm_max_output_chars must be greater than zero")
         if not isinstance(root_stateful_session, bool):
             raise TypeError("root_stateful_session must be a bool")
+        if not isinstance(rlm_multiturn_history, bool):
+            raise TypeError("rlm_multiturn_history must be a bool")
 
         self.max_iterations = int(max_iterations)
         self.num_threads = int(num_threads)
@@ -68,6 +71,7 @@ class RLMDocstringOptimizer(Teleprompter):
         self.rlm_max_llm_calls = int(rlm_max_llm_calls)
         self.rlm_max_output_chars = int(rlm_max_output_chars)
         self.root_stateful_session = root_stateful_session
+        self.rlm_multiturn_history = rlm_multiturn_history
         self.verbose = bool(verbose)
         self.run_storage_dir = (
             Path(run_storage_dir).resolve() if run_storage_dir is not None else None
@@ -174,6 +178,8 @@ class RLMDocstringOptimizer(Teleprompter):
                 session_kwargs["debug_display"] = debug_display
             if _accepts_param(self.session_cls.__init__, "root_stateful_session"):
                 session_kwargs["root_stateful_session"] = self.root_stateful_session
+            if _accepts_param(self.session_cls.__init__, "rlm_multiturn_history"):
+                session_kwargs["rlm_multiturn_history"] = self.rlm_multiturn_history
             if _accepts_param(self.session_cls.__init__, "event_callback"):
                 session_kwargs["event_callback"] = self.event_callback
             session = self.session_cls(**session_kwargs)

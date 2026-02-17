@@ -68,6 +68,20 @@ class StatefulFlagSession:
         }
 
 
+class MultiTurnFlagSession:
+    def __init__(self, *, rlm_multiturn_history: bool, **_kwargs) -> None:
+        self._rlm_multiturn_history = rlm_multiturn_history
+
+    def run(self, kernel):
+        assert self._rlm_multiturn_history is True
+        kernel.optimization_status()
+        return {
+            "optimized_dspy_program": {"step": "Return the answer exactly."},
+            "trajectory": [],
+            "final_reasoning": "multiturn-flag-check",
+        }
+
+
 def test_optimizer_is_teleprompter_compatible():
     optimizer = RLMDocstringOptimizer(
         max_iterations=3,
@@ -189,6 +203,32 @@ def test_rejects_non_bool_root_stateful_session():
             root_lm=dspy.LM("openai/mock-root"),
             eval_lm=dspy.LM("openai/mock-eval"),
             root_stateful_session="yes",  # type: ignore[arg-type]
+            session_cls=FakeSession,
+        )
+
+
+def test_compile_forwards_rlm_multiturn_history_flag_to_session():
+    optimizer = RLMDocstringOptimizer(
+        max_iterations=3,
+        root_lm=dspy.LM("openai/mock-root"),
+        eval_lm=dspy.LM("openai/mock-eval"),
+        rlm_multiturn_history=True,
+        session_cls=MultiTurnFlagSession,
+    )
+    _ = optimizer.compile(
+        student=RuleProgram(),
+        trainset=build_trainset(3),
+        metric=exact_metric,
+    )
+
+
+def test_rejects_non_bool_rlm_multiturn_history():
+    with pytest.raises(TypeError, match="rlm_multiturn_history must be a bool"):
+        RLMDocstringOptimizer(
+            max_iterations=3,
+            root_lm=dspy.LM("openai/mock-root"),
+            eval_lm=dspy.LM("openai/mock-eval"),
+            rlm_multiturn_history="yes",  # type: ignore[arg-type]
             session_cls=FakeSession,
         )
 

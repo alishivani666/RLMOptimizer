@@ -5,9 +5,11 @@ import logging
 from typing import Any, Callable
 
 import dspy
+from dspy.adapters.types.base_type import split_message_content_for_custom_types
 from dspy.predict.rlm import _strip_code_fences
 from dspy.primitives.code_interpreter import CodeInterpreterError
 from dspy.primitives.prediction import Prediction
+from dspy.primitives.repl_types import REPLHistory
 
 from .budgeting import BudgetMeteredLM
 from .interpreter import ReRegisteringPythonInterpreter
@@ -16,6 +18,159 @@ from .root_state import maybe_wrap_stateful_root_lm
 from .tools import OptimizationTools
 
 logger = logging.getLogger(__name__)
+
+
+class _RLMMultiTurnHistoryAdapter(dspy.ChatAdapter):
+    """Render RLM repl history as alternating user/assistant chat turns."""
+
+    _REPL_HISTORY_FIELD = "repl_history"
+    _ITERATION_FIELD = "iteration"
+    _REASONING_FIELD = "reasoning"
+    _CODE_FIELD = "code"
+
+    def format(
+        self,
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not self._supports_multiturn_history(signature):
+            return super().format(signature=signature, demos=demos, inputs=inputs)
+
+        inputs_copy = dict(inputs)
+        history = inputs_copy.pop(self._REPL_HISTORY_FIELD, None)
+        if not isinstance(history, REPLHistory):
+            return super().format(signature=signature, demos=demos, inputs=inputs)
+
+        signature_without_history = signature.delete(self._REPL_HISTORY_FIELD)
+        current_iteration = str(inputs_copy.get(self._ITERATION_FIELD, "")).strip()
+
+        messages: list[dict[str, Any]] = []
+        messages.append(
+            {
+                "role": "system",
+                "content": self.format_system_message(signature_without_history),
+            }
+        )
+        messages.extend(self.format_demos(signature_without_history, demos))
+        messages.extend(
+            self._format_historical_turns(
+                signature=signature_without_history,
+                base_inputs=inputs_copy,
+                history=history,
+                current_iteration=current_iteration,
+            )
+        )
+
+        current_inputs = dict(inputs_copy)
+        if not current_inputs.get(self._ITERATION_FIELD):
+            total = self._max_iterations_from_iteration_label(current_iteration, len(history.entries) + 1)
+            current_inputs[self._ITERATION_FIELD] = f"{len(history.entries) + 1}/{total}"
+
+        current_prefix = ""
+        if history.entries:
+            current_prefix = self._execution_feedback_prefix(history.entries[-1].output)
+        current_content = self.format_user_message_content(
+            signature_without_history,
+            current_inputs,
+            prefix=current_prefix,
+            main_request=True,
+        )
+        messages.append({"role": "user", "content": current_content})
+
+        return split_message_content_for_custom_types(messages)
+
+    def _supports_multiturn_history(self, signature: type[dspy.Signature]) -> bool:
+        repl_history = signature.input_fields.get(self._REPL_HISTORY_FIELD)
+        if repl_history is None:
+            return False
+        if getattr(repl_history, "annotation", None) is not REPLHistory:
+            return False
+        if self._ITERATION_FIELD not in signature.input_fields:
+            return False
+        if self._REASONING_FIELD not in signature.output_fields:
+            return False
+        if self._CODE_FIELD not in signature.output_fields:
+            return False
+        return True
+
+    def _format_historical_turns(
+        self,
+        *,
+        signature: type[dspy.Signature],
+        base_inputs: dict[str, Any],
+        history: REPLHistory,
+        current_iteration: str,
+    ) -> list[dict[str, Any]]:
+        if not history.entries:
+            return []
+
+        max_iterations = self._max_iterations_from_iteration_label(
+            current_iteration, len(history.entries) + 1
+        )
+        turns: list[dict[str, Any]] = []
+        previous_output: str | None = None
+
+        for index, entry in enumerate(history.entries, start=1):
+            user_inputs = dict(base_inputs)
+            user_inputs[self._ITERATION_FIELD] = f"{index}/{max_iterations}"
+            user_prefix = (
+                self._execution_feedback_prefix(previous_output)
+                if previous_output is not None
+                else ""
+            )
+            turns.append(
+                {
+                    "role": "user",
+                    "content": self.format_user_message_content(
+                        signature,
+                        user_inputs,
+                        prefix=user_prefix,
+                        main_request=False,
+                    ),
+                }
+            )
+            turns.append(
+                {
+                    "role": "assistant",
+                    "content": self.format_assistant_message_content(
+                        signature,
+                        {
+                            self._REASONING_FIELD: str(entry.reasoning),
+                            self._CODE_FIELD: self._fenced_code(str(entry.code)),
+                        },
+                    ),
+                }
+            )
+            previous_output = str(entry.output)
+
+        return turns
+
+    def _max_iterations_from_iteration_label(
+        self,
+        iteration_label: str,
+        fallback: int,
+    ) -> int:
+        try:
+            _current, max_text = iteration_label.split("/", maxsplit=1)
+            parsed_max = int(max_text.strip())
+            if parsed_max > 0:
+                return parsed_max
+        except (ValueError, AttributeError):
+            pass
+        return max(int(fallback), 1)
+
+    def _execution_feedback_prefix(self, output: str | None) -> str:
+        text = str(output or "")
+        return (
+            "Execution result from your previous code:\n"
+            "```text\n"
+            f"{text}\n"
+            "```"
+        )
+
+    def _fenced_code(self, code: str) -> str:
+        return f"```python\n{code}\n```"
 
 
 class _InstrumentedRLM(dspy.RLM):
@@ -259,8 +414,7 @@ class PromptOptimizationSignature(dspy.Signature):
         - `failed_from_run`: Re-evaluate only instances that failed in a previous run (pass the run_id).
         - `ids`: Target specific instances by ID (e.g., `ids='3,7,12'` or `ids='10-20'`).
     - Validation split (`split='val'`) for checkpointing generalization:
-        - Use `evaluate_program(split='val')` when you want a validation checkpoint.
-        - It always evaluates the full validation set (no subset validation).
+        - It always evaluates the full validation set.
         - Any selector args passed with `split='val'` are ignored.
     - Use `run_data(run_id)` to re-read previous evaluations at no budget cost.
     
@@ -281,14 +435,15 @@ class PromptOptimizationSignature(dspy.Signature):
     - When budget is getting low, do an explicit affordability check before any evaluation call (`train` or `val`).
     - When evaluation budget reaches zero, no more evaluations can run, but you may still continue analysis and decide which set of prompts you would like to submit.
 
-    ## Coding Environment
-    - Output exactly one code block per response, formatted as: ```python <code> ```
-    - Do not add extra ``` markers or text after the closing fence—they because will cause a SyntaxError.
-    - Your environment persists across iterations:
-        - Imports, variables, and functions stay available in later iterations.
-        - Define helpers early and reuse them. Do not rewrite the same code each turn.
-    - Printed output that exceeds the per-iteration character limit is truncated. However, only the display is cut short. The actual data itself is not lost.
-    
+    ## Environment
+    - You are working in a persistent Python REPL for this run: code executed in previous iterations (if any) may have already created imports, variables, and functions that are still available now, and anything you define successfully will remain available in later iterations.
+    - Treat the REPL as a workspace. Use it to achieve your goal and build momentum across iterations, not just to “run the next snippet”.
+    - Printed output may be truncated for display; keep important artifacts in variables so they remain available.
+
+    ## Output Format
+    - `code` output field: Python code to execute. Use markdown code block format: ```python\\n<code>\\n```.
+    - `reasoning` output field: plain text only (no markdown code fences).
+
     ## Submission
     - Submit `optimized_dspy_program` as a dict[str, str] containing exactly one prompt for every step.
     - Use the same step names returned by `optimization_status()['steps']` and trace `steps[*].step_name`."""
@@ -324,6 +479,7 @@ class RLMSession:
         rlm_factory: Callable[..., Any] | None = None,
         debug_display: Any | None = None,
         root_stateful_session: bool = True,
+        rlm_multiturn_history: bool = False,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._root_lm = root_lm
@@ -335,6 +491,7 @@ class RLMSession:
         self._rlm_factory = rlm_factory
         self._debug_display = debug_display
         self._root_stateful_session = bool(root_stateful_session)
+        self._rlm_multiturn_history = bool(rlm_multiturn_history)
         self._event_callback = event_callback
 
     def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -416,6 +573,7 @@ class RLMSession:
             {
                 "max_iterations": self._max_iterations,
                 "max_llm_calls": self._max_llm_calls,
+                "rlm_multiturn_history": self._rlm_multiturn_history,
             },
         )
         tools = OptimizationTools(kernel, event_callback=self._event_callback)
@@ -441,7 +599,11 @@ class RLMSession:
         unoptimized_dspy_program = _render_program_text(kernel.program)
 
         try:
-            with dspy.context(lm=root_lm, adapter=dspy.JSONAdapter()):
+            context_kwargs: dict[str, Any] = {"lm": root_lm}
+            if self._rlm_multiturn_history:
+                context_kwargs["adapter"] = _RLMMultiTurnHistoryAdapter()
+
+            with dspy.context(**context_kwargs):
                 prediction = rlm(
                     unoptimized_dspy_program=unoptimized_dspy_program,
                     unoptimized_baseline_summary=unoptimized_baseline_summary,

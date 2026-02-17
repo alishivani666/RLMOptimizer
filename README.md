@@ -117,11 +117,14 @@ RLMDocstringOptimizer(
     rlm_max_llm_calls=200,      # max sub-LM calls the agent can make
     rlm_max_output_chars=10000, # max output size per agent iteration
     root_stateful_session=True, # auto-thread previous_response_id for root_lm when compatible
+    rlm_multiturn_history=False,# render RLM iteration history as user/assistant turns instead of one flattened user field
     verbose=False,              # print agent trajectory
 )
 ```
 
 Stateful root sessions require `root_lm` in Responses mode (`model_type="responses"`). If the root model is not compatible (for example chat mode, or `store=False`), optimization still runs but root reasoning state is not threaded across turns.
+
+If you enable both `root_stateful_session=True` and `rlm_multiturn_history=True`, the optimizer now preserves turn structure for Responses calls (system/user/assistant/user ...) while still chaining `previous_response_id` between turns.
 
 The returned program has extra attributes:
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import dspy
+
 from rlmoptimizer.root_state import StatefulRootLM, maybe_wrap_stateful_root_lm
 
 
@@ -139,3 +141,61 @@ def test_maybe_wrap_stateful_root_lm_compatibility_checks():
     assert unchanged is store_false_lm
     assert issue is not None
     assert "store=False" in issue
+
+
+def test_stateful_root_lm_preserves_multiturn_input_for_dspy_responses_lm(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
+    def _fake_responses(**kwargs: Any):
+        calls.append(dict(kwargs))
+        response_id = f"resp_{len(calls)}"
+        return _response(response_id=response_id, text="ok")
+
+    monkeypatch.setattr("rlmoptimizer.root_state.litellm.responses", _fake_responses)
+
+    lm = dspy.LM(
+        "openai/mock-root",
+        model_type="responses",
+        cache=False,
+        store=True,
+        reasoning_effort="medium",
+    )
+    wrapped = StatefulRootLM(lm)
+
+    first_messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+    second_messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "follow up"},
+    ]
+
+    first = wrapped(messages=first_messages)
+    second = wrapped(messages=second_messages)
+
+    assert first[0]["text"] == "ok"
+    assert second[0]["text"] == "ok"
+
+    assert len(calls) == 2
+    assert calls[0].get("reasoning_effort") is None
+    assert calls[0].get("reasoning") == {"effort": "medium", "summary": "auto"}
+
+    first_input = calls[0].get("input")
+    assert isinstance(first_input, list)
+    assert [item.get("role") for item in first_input] == ["system", "user", "assistant", "user"]
+    assert first_input[0]["content"] == [{"type": "input_text", "text": "sys"}]
+    assert first_input[1]["content"] == [{"type": "input_text", "text": "u1"}]
+    assert first_input[2]["content"] == [{"type": "input_text", "text": "a1"}]
+    assert first_input[3]["content"] == [{"type": "input_text", "text": "u2"}]
+
+    assert calls[0].get("previous_response_id") is None
+    assert calls[1].get("previous_response_id") == "resp_1"
+    second_input = calls[1].get("input")
+    assert isinstance(second_input, list)
+    assert [item.get("role") for item in second_input] == ["user"]
+    assert second_input[0]["content"] == [{"type": "input_text", "text": "follow up"}]

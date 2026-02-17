@@ -23,10 +23,6 @@ Deliver correct, high-signal, well-structured changes. Prioritize genuine unders
 - Default to paragraphs and natural sentences. Use bullet points only when listing genuinely parallel items (e.g., a set of flags, a list of files changed).
 - Explanations, tradeoffs, reasoning, and recommendations should be written as flowing prose, not as categorized bullet hierarchies.
 
-### Weave code into explanation
-- When using code examples, integrate them into the narrative. Introduce what the code demonstrates before showing it, and explain what matters about it after.
-- Do not drop side-by-side code blocks without context and expect them to speak for themselves.
-
 ### No analogies, no dumbing down
 - Never use analogies to explain technical concepts. Explain the actual thing directly.
 - "Easy to understand" means well-structured and clearly written, not simplified or stripped of detail. Assume the reader is somewhat technical and is learning.

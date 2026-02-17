@@ -65,6 +65,8 @@ def test_harness_reuses_optimizer_baseline_for_pre_train_and_pre_val(tmp_path: P
         loaders={"fake": lambda: _fake_loader("fake")},
         model_builder=_fake_bundle,
         session_cls=_NoopSession,
+        optimizer_root_stateful_session=False,
+        optimizer_rlm_multiturn_history=False,
     )
 
     bench_summary = run_summary["benchmarks"]["fake"]
@@ -98,6 +100,8 @@ def test_harness_isolates_failures_and_keeps_other_results(tmp_path: Path):
         loaders={"good": lambda: _fake_loader("good"), "bad": _bad_loader},
         model_builder=_fake_bundle,
         session_cls=_NoopSession,
+        optimizer_root_stateful_session=False,
+        optimizer_rlm_multiturn_history=False,
     )
 
     assert run_summary["benchmarks"]["good"]["status"] == "ok"
@@ -124,6 +128,8 @@ def test_progress_math_uses_correct_expected_total_and_excludes_baseline(tmp_pat
         model_builder=_fake_bundle,
         optimizer_cls=RLMDocstringOptimizer,
         session_cls=_NoopSession,
+        optimizer_root_stateful_session=False,
+        optimizer_rlm_multiturn_history=False,
     )
 
     assert summary["status"] == "ok"
@@ -142,6 +148,11 @@ def test_progress_math_uses_correct_expected_total_and_excludes_baseline(tmp_pat
         "code": 0.0,
         "output": 0.0,
     }
+    assert summary["analytics"]["cross_iteration_function_reuse_calls"] == 0
+    assert summary["analytics"]["iterations_with_cross_iteration_function_reuse"] == 0
+    assert summary["analytics"]["cross_iteration_reused_functions_count"] == 0
+    assert summary["analytics"]["cross_iteration_reuse_analyzed_iterations"] == 0
+    assert summary["analytics"]["cross_iteration_reuse_skipped_iterations"] == 0
 
     progress_total = sum(
         int(message.get("delta") or 0)
