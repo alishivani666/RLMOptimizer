@@ -399,7 +399,7 @@ def _build_unoptimized_baseline_summary(kernel: OptimizationKernel) -> str:
 
 
 class PromptOptimizationSignature(dspy.Signature):
-    """You are optimizing prompts in an LLM program. You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
+    """You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
 
     ## Goal
     - Achieve the highest score you can on train and validation, while ensuring these improvements generalize to a held-out test set. 
