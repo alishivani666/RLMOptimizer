@@ -5,11 +5,13 @@ import logging
 from typing import Any, Callable
 
 import dspy
+from dspy.adapters.base import Adapter
 from dspy.adapters.types.base_type import split_message_content_for_custom_types
 from dspy.predict.rlm import _strip_code_fences
 from dspy.primitives.code_interpreter import CodeInterpreterError
 from dspy.primitives.prediction import Prediction
 from dspy.primitives.repl_types import REPLHistory
+from litellm.exceptions import ContextWindowExceededError
 
 from .budgeting import BudgetMeteredLM
 from .interpreter import ReRegisteringPythonInterpreter
@@ -18,13 +20,15 @@ from .root_state import maybe_wrap_stateful_root_lm
 from .tools import OptimizationTools
 
 logger = logging.getLogger(__name__)
+_MISSING_PARENT_RESPONSE_ID = object()
 
 
-class _RLMMultiTurnHistoryAdapter(dspy.ChatAdapter):
-    """Render RLM repl history as alternating user/assistant chat turns."""
+class _RLMMultiTurnFormatMixin:
+    """Multi-turn input formatting shared by chat and JSON fallback adapters."""
 
     _REPL_HISTORY_FIELD = "repl_history"
     _ITERATION_FIELD = "iteration"
+    _VARIABLES_INFO_FIELD = "variables_info"
     _REASONING_FIELD = "reasoning"
     _CODE_FIELD = "code"
 
@@ -66,6 +70,8 @@ class _RLMMultiTurnHistoryAdapter(dspy.ChatAdapter):
         if not current_inputs.get(self._ITERATION_FIELD):
             total = self._max_iterations_from_iteration_label(current_iteration, len(history.entries) + 1)
             current_inputs[self._ITERATION_FIELD] = f"{len(history.entries) + 1}/{total}"
+        if history.entries:
+            current_inputs.pop(self._VARIABLES_INFO_FIELD, None)
 
         current_prefix = ""
         if history.entries:
@@ -114,6 +120,8 @@ class _RLMMultiTurnHistoryAdapter(dspy.ChatAdapter):
         for index, entry in enumerate(history.entries, start=1):
             user_inputs = dict(base_inputs)
             user_inputs[self._ITERATION_FIELD] = f"{index}/{max_iterations}"
+            if index > 1:
+                user_inputs.pop(self._VARIABLES_INFO_FIELD, None)
             user_prefix = (
                 self._execution_feedback_prefix(previous_output)
                 if previous_output is not None
@@ -171,6 +179,157 @@ class _RLMMultiTurnHistoryAdapter(dspy.ChatAdapter):
 
     def _fenced_code(self, code: str) -> str:
         return f"```python\n{code}\n```"
+
+
+class _RLMMultiTurnJSONFallbackAdapter(_RLMMultiTurnFormatMixin, dspy.JSONAdapter):
+    """JSON output adapter that keeps the RLM multi-turn input formatting."""
+
+
+class _RLMMultiTurnHistoryAdapter(_RLMMultiTurnFormatMixin, dspy.ChatAdapter):
+    """Render RLM repl history as alternating user/assistant chat turns."""
+
+    def __init__(self) -> None:
+        super().__init__(use_json_adapter_fallback=True)
+
+    def _make_json_fallback_adapter(self) -> _RLMMultiTurnJSONFallbackAdapter:
+        return _RLMMultiTurnJSONFallbackAdapter(
+            callbacks=list(self.callbacks),
+            use_native_function_calling=self.use_native_function_calling,
+        )
+
+    def _call_primary(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return Adapter.__call__(self, lm, lm_kwargs, signature, demos, inputs)
+
+    async def _acall_primary(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return await Adapter.acall(self, lm, lm_kwargs, signature, demos, inputs)
+
+    def _should_use_json_fallback(self, exc: Exception) -> bool:
+        return self.use_json_adapter_fallback and not isinstance(
+            exc, ContextWindowExceededError
+        )
+
+    def _parent_response_id_for_fallback(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+    ) -> Any:
+        if "previous_response_id" in lm_kwargs:
+            return lm_kwargs.get("previous_response_id")
+        return getattr(lm, "previous_response_id", _MISSING_PARENT_RESPONSE_ID)
+
+    def _same_parent_fallback_kwargs(
+        self,
+        lm_kwargs: dict[str, Any],
+        parent_response_id: Any,
+    ) -> dict[str, Any]:
+        fallback_kwargs = dict(lm_kwargs)
+        if parent_response_id is not _MISSING_PARENT_RESPONSE_ID:
+            fallback_kwargs["previous_response_id"] = parent_response_id
+        return fallback_kwargs
+
+    def _call_json_fallback(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        fallback = self._make_json_fallback_adapter()
+        return fallback(lm, lm_kwargs, signature, demos, inputs)
+
+    async def _acall_json_fallback(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        fallback = self._make_json_fallback_adapter()
+        return await fallback.acall(lm, lm_kwargs, signature, demos, inputs)
+
+    def _call_with_json_fallback(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        parent_response_id = self._parent_response_id_for_fallback(lm, lm_kwargs)
+        try:
+            return self._call_primary(lm, lm_kwargs, signature, demos, inputs)
+        except Exception as exc:
+            if not self._should_use_json_fallback(exc):
+                raise
+            fallback_kwargs = self._same_parent_fallback_kwargs(
+                lm_kwargs, parent_response_id
+            )
+            return self._call_json_fallback(
+                lm, fallback_kwargs, signature, demos, inputs
+            )
+
+    async def _acall_with_json_fallback(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        parent_response_id = self._parent_response_id_for_fallback(lm, lm_kwargs)
+        try:
+            return await self._acall_primary(
+                lm, lm_kwargs, signature, demos, inputs
+            )
+        except Exception as exc:
+            if not self._should_use_json_fallback(exc):
+                raise
+            fallback_kwargs = self._same_parent_fallback_kwargs(
+                lm_kwargs, parent_response_id
+            )
+            return await self._acall_json_fallback(
+                lm, fallback_kwargs, signature, demos, inputs
+            )
+
+    def __call__(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return self._call_with_json_fallback(
+            lm, lm_kwargs, signature, demos, inputs
+        )
+
+    async def acall(
+        self,
+        lm: dspy.LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[dspy.Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return await self._acall_with_json_fallback(
+            lm, lm_kwargs, signature, demos, inputs
+        )
 
 
 class _InstrumentedRLM(dspy.RLM):
@@ -398,6 +557,19 @@ def _build_unoptimized_baseline_summary(kernel: OptimizationKernel) -> str:
     return "\n".join(lines)
 
 
+def _root_model_name_for_routing(lm: Any) -> str:
+    raw_model_name = str(getattr(lm, "model", "") or "").strip().lower()
+    if not raw_model_name:
+        return ""
+    if "/" in raw_model_name:
+        return raw_model_name.rsplit("/", maxsplit=1)[-1]
+    return raw_model_name
+
+
+def _is_gpt5_family_root_model(lm: Any) -> bool:
+    return _root_model_name_for_routing(lm).startswith("gpt-5")
+
+
 class PromptOptimizationSignature(dspy.Signature):
     """You are optimizing prompts in an LLM program. The program processes instances through one or more steps. Each step calls an LLM with a prompt that tells it what to do.
 
@@ -405,6 +577,11 @@ class PromptOptimizationSignature(dspy.Signature):
     - Achieve the highest score you can on train and validation, while ensuring these improvements generalize to a held-out test set. 
     - Maximize score on both splits. A large gap between them suggests overfitting.
     - Use validation checkpoints throughout optimization when train-side changes look meaningfully better.
+
+    ## Environment
+    - You are working in a persistent Python REPL for this run: code executed in previous iterations (if any) may have already created imports, variables, and functions that are still available now, and anything you define successfully will remain available in later iterations.
+    - Treat the REPL as a workspace. Use it to achieve your goal and build momentum across iterations, not just to “run the next snippet”.
+    - Printed output may be truncated for display; keep important artifacts in variables so they remain available.
 
     ## Running experiments
     - Use `evaluate_program()` to test your changes.
@@ -426,24 +603,28 @@ class PromptOptimizationSignature(dspy.Signature):
     - Evaluations return per-step traces showing what each step received as input and what it produced as output. This is your primary diagnostic tool. When the final output is wrong, trace back through the steps to find where the error first appeared.
     - In multi-step programs, errors cascade: a bad prompt in step 1 produces flawed output that causes step 2 to fail, which causes step 3 to fail. Fix the root cause, not the downstream symptoms.
 
+    ### Using the sub-LM functions (`llm_query`, `llm_query_batched`)
+    - You have two helper functions:
+        - `llm_query(prompt)`
+        - `llm_query_batched([prompt1, prompt2, ...])`
+    - These functions let you query another LLM for anything you need to do where code alone isn't sufficient or doing it manually would pollute your context window. Tasks such as reading, analyzing, or summarzing traces, steps, examples and failures.
+    - Include all necessary context in each prompt since the sub-LM has no access to your REPL state or conversation history.
+    - Calls are composable: you can chain them, feeding one call's output into the next, building analysis in stages.
+
     ## Budget
     - Each instance evaluated costs one budget unit.
+    - Each `llm_query` call also costs one budget unit; each prompt in a `llm_query_batched` batch costs one unit.
     - Every `evaluate_program()` result includes `remaining_budget`; treat that as your primary budget signal and keep track of it as you iterate.
     - A requested evaluation fails if its required instances exceed remaining budget.
     - `split='val'` always runs the full validation set, so its cost is the full val-set size.
     - `split='train'` cost equals the number of selected train instances.
     - When budget is getting low, do an explicit affordability check before any evaluation call (`train` or `val`).
-    - When evaluation budget reaches zero, no more evaluations can run, but you may still continue analysis and decide which set of prompts you would like to submit.
-
-    ## Environment
-    - You are working in a persistent Python REPL for this run: code executed in previous iterations (if any) may have already created imports, variables, and functions that are still available now, and anything you define successfully will remain available in later iterations.
-    - Treat the REPL as a workspace. Use it to achieve your goal and build momentum across iterations, not just to “run the next snippet”.
-    - Printed output may be truncated for display; keep important artifacts in variables so they remain available.
+    - When evaluation budget reaches zero, no more evaluations can run, but you may still continue analysis and decide which prompt(s) you would like to submit.
 
     ## Output Format
     - `code` output field: Python code to execute. Use markdown code block format: ```python\\n<code>\\n```.
     - `reasoning` output field: plain text only (no markdown code fences).
-
+    
     ## Submission
     - Submit `optimized_dspy_program` as a dict[str, str] containing exactly one prompt for every step.
     - Use the same step names returned by `optimization_status()['steps']` and trace `steps[*].step_name`."""
@@ -564,6 +745,11 @@ class RLMSession:
 
         return dspy.RLM(**kwargs)
 
+    def _multiturn_adapter_for_root_lm(self, root_lm_for_run: Any) -> Any:
+        if _is_gpt5_family_root_model(root_lm_for_run):
+            return _RLMMultiTurnJSONFallbackAdapter()
+        return _RLMMultiTurnHistoryAdapter()
+
     def run(
         self,
         kernel: OptimizationKernel,
@@ -577,8 +763,9 @@ class RLMSession:
             },
         )
         tools = OptimizationTools(kernel, event_callback=self._event_callback)
+        root_lm_for_run = self._build_root_lm_for_run()
         root_lm = BudgetMeteredLM(
-            lm=self._build_root_lm_for_run(),
+            lm=root_lm_for_run,
             budget_consumer=kernel,
             source="root",
             event_callback=self._event_callback,
@@ -601,7 +788,9 @@ class RLMSession:
         try:
             context_kwargs: dict[str, Any] = {"lm": root_lm}
             if self._rlm_multiturn_history:
-                context_kwargs["adapter"] = _RLMMultiTurnHistoryAdapter()
+                context_kwargs["adapter"] = self._multiturn_adapter_for_root_lm(
+                    root_lm_for_run
+                )
 
             with dspy.context(**context_kwargs):
                 prediction = rlm(

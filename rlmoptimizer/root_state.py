@@ -228,6 +228,17 @@ class StatefulRootLM(dspy.BaseLM):
             merged.pop("rollout_id", None)
         return merged, cache
 
+    def _check_truncation_and_track_usage(self, response: Any) -> None:
+        check_truncation = getattr(self._lm, "_check_truncation", None)
+        if callable(check_truncation):
+            check_truncation(response)
+        if (
+            not getattr(response, "cache_hit", False)
+            and dspy.settings.usage_tracker
+            and hasattr(response, "usage")
+        ):
+            dspy.settings.usage_tracker.add_usage(self.model, dict(response.usage))
+
     def _forward_responses_preserving_turns(
         self,
         *,
@@ -246,21 +257,15 @@ class StatefulRootLM(dspy.BaseLM):
         if callable(get_cached):
             completion, cache_args = get_cached(completion, cache)
 
+        request_payload = dict(model=self.model, messages=prepared_messages, **merged_kwargs)
+        num_retries = int(getattr(self._lm, "num_retries", 3))
         response = completion(
-            request=dict(model=self.model, messages=prepared_messages, **merged_kwargs),
-            num_retries=int(getattr(self._lm, "num_retries", 3)),
+            request=request_payload,
+            num_retries=num_retries,
             cache=cache_args,
         )
+        self._check_truncation_and_track_usage(response)
 
-        check_truncation = getattr(self._lm, "_check_truncation", None)
-        if callable(check_truncation):
-            check_truncation(response)
-        if (
-            not getattr(response, "cache_hit", False)
-            and dspy.settings.usage_tracker
-            and hasattr(response, "usage")
-        ):
-            dspy.settings.usage_tracker.add_usage(self.model, dict(response.usage))
         return response
 
     async def _aforward_responses_preserving_turns(
@@ -281,21 +286,15 @@ class StatefulRootLM(dspy.BaseLM):
         if callable(get_cached):
             completion, cache_args = get_cached(completion, cache)
 
+        request_payload = dict(model=self.model, messages=prepared_messages, **merged_kwargs)
+        num_retries = int(getattr(self._lm, "num_retries", 3))
         response = await completion(
-            request=dict(model=self.model, messages=prepared_messages, **merged_kwargs),
-            num_retries=int(getattr(self._lm, "num_retries", 3)),
+            request=request_payload,
+            num_retries=num_retries,
             cache=cache_args,
         )
+        self._check_truncation_and_track_usage(response)
 
-        check_truncation = getattr(self._lm, "_check_truncation", None)
-        if callable(check_truncation):
-            check_truncation(response)
-        if (
-            not getattr(response, "cache_hit", False)
-            and dspy.settings.usage_tracker
-            and hasattr(response, "usage")
-        ):
-            dspy.settings.usage_tracker.add_usage(self.model, dict(response.usage))
         return response
 
     def forward(

@@ -199,3 +199,55 @@ def test_stateful_root_lm_preserves_multiturn_input_for_dspy_responses_lm(monkey
     assert isinstance(second_input, list)
     assert [item.get("role") for item in second_input] == ["user"]
     assert second_input[0]["content"] == [{"type": "input_text", "text": "follow up"}]
+
+
+def test_stateful_root_lm_does_not_retry_multi_message_output(monkeypatch):
+    calls: list[dict[str, Any]] = []
+    responses = [
+        _response(response_id="resp_1", text="ok-1"),
+        SimpleNamespace(
+            id="resp_bad",
+            model="openai/fake-responses",
+            usage={},
+            output=[
+                SimpleNamespace(type="message", content=[SimpleNamespace(text="only reasoning")]),
+                SimpleNamespace(type="message", content=[SimpleNamespace(text="only code")]),
+            ],
+        ),
+    ]
+
+    def _fake_responses(**kwargs: Any):
+        calls.append(dict(kwargs))
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr("rlmoptimizer.root_state.litellm.responses", _fake_responses)
+
+    lm = dspy.LM(
+        "openai/mock-root",
+        model_type="responses",
+        cache=False,
+        store=True,
+    )
+    wrapped = StatefulRootLM(lm)
+
+    first_messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+    ]
+    second_messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "follow up"},
+    ]
+
+    _ = wrapped(messages=first_messages)
+    second = wrapped(messages=second_messages)
+
+    assert "only reasoning" in second[0]["text"]
+    assert "only code" in second[0]["text"]
+    assert len(calls) == 2
+    assert calls[1].get("previous_response_id") == "resp_1"
+    assert wrapped.previous_response_id == "resp_bad"

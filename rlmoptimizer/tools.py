@@ -457,9 +457,7 @@ Use this freely to re-examine old runs, compare results, or analyze failures wit
             ),
             dspy.Tool(
                 self.update_prompt,
-                desc="""Rewrite the prompt for one step in the program.
-
-You must provide the complete new prompt text - this is a full replacement, not a patch.
+                desc="""Rewrite the prompt for one step in the program. You must provide the complete new prompt text - this is a full replacement, not a patch.
 
 On success, returns a dict:
 {
